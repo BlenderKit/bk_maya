@@ -9,6 +9,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     ##
+    # qtpy is also vendored into bk_maya/lib/ at build time via `python dev.py vendor`.
+    # Keeping it here too so IDEs and the local venv get full type-checking support.
+    "qtpy>=2.4.3",
     "numpy>=1.21.0,<2.0.0",
 
     "bandit>=1.9.4", # code is currently invalid for bandit

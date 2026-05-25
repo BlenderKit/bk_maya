@@ -11,6 +11,9 @@ client_builds
 
 .ruff_cache
 
+# generated vendor directory (populated by `python dev.py vendor` or `python dev.py build`)
+bk_maya/lib/
+
 # prevent publishing of dynamically created updater cache
 *_updater_status.json
 

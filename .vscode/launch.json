@@ -26,14 +26,14 @@
         },
 
         {
-            "name": "Build Addon and Hardlink",
+            "name": "Register Module (hardlink)",
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}/.vscode/build_and_hardlink_addon_to_blenders.py",
+            "program": "${workspaceFolder}/.vscode/maya_module.py",
             "args": [
-                "build",
+                "hardlink",
             ],
             "windows": {
                 "python": "${workspaceFolder}/.venv/Scripts/python.exe",
@@ -47,14 +47,14 @@
         },
 
         {
-            "name": "Remove Addon Hardlinks",
+            "name": "Unregister Module (remove)",
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}/.vscode/remove_hardlinks_from_blenders.py",
+            "program": "${workspaceFolder}/.vscode/maya_module.py",
             "args": [
-                "build",
+                "remove",
             ],
             "windows": {
                 "python": "${workspaceFolder}/.venv/Scripts/python.exe",
@@ -73,6 +73,9 @@
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
+            "env": {
+                "BLENDERKIT_DEBUG":"1"
+            },
             "windows": {
                 "runtimeExecutable": "C:/Program Files/Autodesk/Maya2027/bin/maya.exe",
             },
