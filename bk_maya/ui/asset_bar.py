@@ -268,7 +268,8 @@ class AssetDetailDialog(QDialog):
 # Licence / badge helpers
 # ---------------------------------------------------------------------------
 
-_BADGE_SIZE = 20
+_BADGE_SIZE     = 20
+_DRAG_THRESHOLD = 8   # px manhattan distance before drag-to-place starts
 
 
 def _license_label(asset: dict[str, Any]) -> str:
@@ -350,6 +351,7 @@ class AssetTile(QFrame):
         self._thumb_path:     str  = ""
         self._is_placeholder: bool = True
         self._thumb_sz:       int  = max(32, cell_w - 8)
+        self._press_pos:      QPoint | None = None
 
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet(
@@ -469,6 +471,30 @@ class AssetTile(QFrame):
             menu.addAction(web_act)
 
         menu.exec(event.globalPos())
+
+    # ── Mouse drag initiation ─────────────────────────────────────────────
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.LeftButton and not self._is_placeholder:
+            self._press_pos = event.globalPos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if (
+            self._press_pos is not None
+            and not self._is_placeholder
+            and self._asset
+            and (event.globalPos() - self._press_pos).manhattanLength()
+            >= _DRAG_THRESHOLD
+        ):
+            self._press_pos = None   # prevent re-triggering
+            from bk_maya.ui.placement import start_drag
+            start_drag(self._asset, self._thumb_path)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
 
     def _open_detail(self) -> None:
         dlg = AssetDetailDialog(self._asset, parent=self.window())
