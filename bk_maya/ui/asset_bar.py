@@ -493,6 +493,16 @@ class AssetTile(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if (
+            event.button() == Qt.LeftButton
+            and not self._is_placeholder
+            and self._asset
+            and self._press_pos is not None
+            and (event.globalPos() - self._press_pos).manhattanLength() < 8
+        ):
+            # Click without drag: place at origin
+            from bk_maya.ui.placement import place_at_origin
+            place_at_origin(self._asset, self._thumb_path)
         self._press_pos = None
         super().mouseReleaseEvent(event)
 

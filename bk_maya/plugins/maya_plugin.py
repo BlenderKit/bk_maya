@@ -173,6 +173,21 @@ def initializePlugin(plugin: om2.MObject) -> None:
     # Also pipe to Maya's Script Editor
     _install_maya_log_handler()
 
+    # Auto-load the placement-locator plug-in (drag-to-place visual).
+    # It's a separate Maya plug-in file living next to this one, mirroring
+    # the proxor pattern (one .py plug-in per locator/draw-override).
+    try:
+        import maya.cmds as cmds  # noqa: PLC0415
+        plugin_name = "placement_locator"
+        plugin_path = os.path.join(fn.loadPath(), plugin_name + ".py")
+        if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
+            cmds.loadPlugin(plugin_path, quiet=True)
+        # Persist across Maya restarts.
+        cmds.pluginInfo(plugin_name, edit=True, autoload=True)
+        print(f"[BlenderKit] {plugin_name} plug-in auto-loaded.")
+    except Exception as exc:
+        print(f"[BlenderKit] Placement locator not auto-loaded: {exc}")
+
     try:
         _build_menu()
     except Exception as exc:
@@ -181,9 +196,17 @@ def initializePlugin(plugin: om2.MObject) -> None:
 
 
 def uninitializePlugin(plugin: om2.MObject) -> None:
+    fn = om2.MFnPlugin(plugin)
     try:
         _remove_menu()
     except Exception as exc:
         print(f"[BlenderKit] Menu removal error: {exc}")
+
+    # Leave the placement_locator plug-in loaded – it has its own
+    # uninitializePlugin which will run when Maya itself unloads it (or
+    # when the user does `cmds.unloadPlugin("placement_locator")`).  We do
+    # NOT force-unload here because the user may unload BlenderKit while
+    # still using the locator.
+
     print("[BlenderKit] Plugin uninitialized.")
 
