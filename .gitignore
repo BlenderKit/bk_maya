@@ -1,0 +1,31 @@
+__pycache__
+out
+# ignore built binaries
+client/v*.*.*
+client/client.exe
+
+client_builds
+.mypy_cache
+.venv
+.pdm-python
+
+.ruff_cache
+
+# generated vendor directory (populated by `python dev.py vendor` or `python dev.py build`)
+bk_maya/lib/
+
+# prevent publishing of dynamically created updater cache
+*_updater_status.json
+
+# debug and backup folders
+_debug/
+_bck/
+
+# debug env variables
+.env
+
+# macos thumbnail database
+.DS_Store
+
+# man
+instructions.txt

@@ -1,0 +1,83 @@
+"""BlenderKit Maya plugin entry point.
+
+This file is discovered by Maya via the MAYA_PLUG_IN_PATH entry written in
+blenderkit_dev_hl.mod and appears in Maya's Plug-in Manager as maya_plugin.py.
+
+Loading it (manually or via Auto load) will:
+1. Ensure bk_maya/lib (qtpy, packaging) and the repo root are on sys.path.
+2. Register BlenderKit commands and UI panels (populated incrementally).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import maya.api.OpenMaya as om2
+
+PLUGIN_VERSION = "0.1.0"
+VENDOR = "BlenderKit s.r.o."
+
+
+def maya_useNewAPI() -> None:
+    """Declare Maya Python API 2.0 usage."""
+
+
+def _ensure_paths() -> None:
+    """Add bk_maya/ and bk_maya/lib to sys.path if not already present.
+
+    The .mod file sets PYTHONPATH at Maya startup, but this is a reliable
+    fallback for cases where the module was loaded after startup or the
+    PYTHONPATH entries were not yet applied.
+    """
+    # __file__ is <repo>/bk_maya/maya_plugin.py
+    bk_maya_dir = os.path.dirname(os.path.abspath(__file__))
+    lib_dir = os.path.join(bk_maya_dir, "lib")
+    for extra in (bk_maya_dir, lib_dir):
+        if os.path.isdir(extra) and extra not in sys.path:
+            sys.path.insert(0, extra)
+
+
+def _add_shelf_button() -> None:
+    """Add a BlenderKit button to the active Maya shelf."""
+    import maya.cmds as cmds  # type: ignore
+    import maya.mel as mel   # type: ignore
+
+    # Ensure there's a shelf to add to
+    top_shelf = mel.eval("$tmpVar=$gShelfTopLevel")
+    shelves = cmds.tabLayout(top_shelf, query=True, tabLabel=True) or []
+    shelf_name = "BlenderKit"
+
+    if shelf_name not in shelves:
+        mel.eval(f'addNewShelfTab "{shelf_name}";')
+
+    # Avoid duplicate buttons on reload
+    existing = cmds.shelfLayout(shelf_name, query=True, childArray=True) or []
+    for btn in existing:
+        if cmds.shelfButton(btn, query=True, exists=True):
+            lbl = cmds.shelfButton(btn, query=True, label=True)
+            if lbl == "BKit":
+                return
+
+    cmds.shelfButton(
+        label="BKit",
+        parent=shelf_name,
+        annotation="Open BlenderKit Asset Bar",
+        command="import bk_maya.ui.asset_bar as _ab; _ab.open_asset_bar()",
+        sourceType="python",
+        image="menuIconFile.png",  # generic icon; replace with bk icon later
+    )
+
+
+def initializePlugin(plugin: om2.MObject) -> None:
+    _ensure_paths()
+    om2.MFnPlugin(plugin, VENDOR, PLUGIN_VERSION)
+    print(f"[BlenderKit] Plugin initialized (v{PLUGIN_VERSION})")
+    try:
+        _add_shelf_button()
+    except Exception as exc:
+        print(f"[BlenderKit] Shelf button not added: {exc}")
+
+
+def uninitializePlugin(plugin: om2.MObject) -> None:
+    print("[BlenderKit] Plugin uninitialized.")

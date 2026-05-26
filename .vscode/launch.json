@@ -1,0 +1,285 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    // define custom variables
+
+    "version": "0.2.0",
+    "configurations": [
+
+
+        {
+            "name": "Run Project Setup",
+            "type": "node",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "runtimeExecutable": "${workspaceFolder}/.vscode/pdm_setup_project.bat",
+            },
+            "linux": {
+                "runtimeExecutable": "${workspaceFolder}/.vscode/pdm_setup_project.sh",
+            },
+            "osx": {
+                "runtimeExecutable": "${workspaceFolder}/.vscode/pdm_setup_project.sh",
+            }
+        },
+
+        {
+            "name": "Register Module (hardlink)",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "program": "${workspaceFolder}/.vscode/maya_module.py",
+            "args": [
+                "hardlink",
+            ],
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
+            "name": "Unregister Module (remove)",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "program": "${workspaceFolder}/.vscode/maya_module.py",
+            "args": [
+                "remove",
+            ],
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
+            "name": "Run MAYA 2027",
+            "type": "node",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "BLENDERKIT_DEBUG":"1"
+            },
+            "windows": {
+                "runtimeExecutable": "C:/Program Files/Autodesk/Maya2027/bin/maya.exe",
+            },
+        },
+
+        {
+            "name": "[GOFMT] Check client",
+            "type": "node",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "runtimeExecutable": "powershell",
+                "args": [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-Command",
+                    "$fmt = gofmt -l ./client; if ($fmt) { Write-Host 'Go files need formatting:'; $fmt; Write-Host ''; Write-Host 'gofmt diff:'; gofmt -d ./client; exit 1 } else { Write-Host 'Go files are formatted.' }"
+                ]
+            },
+            "linux": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "fmt_out=\"$(gofmt -l ./client)\"; if [ -n \"$fmt_out\" ]; then echo 'Go files need formatting:'; echo \"$fmt_out\"; echo ''; echo 'gofmt diff:'; gofmt -d ./client; exit 1; else echo 'Go files are formatted.'; fi"
+                ]
+            },
+            "osx": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "fmt_out=\"$(gofmt -l ./client)\"; if [ -n \"$fmt_out\" ]; then echo 'Go files need formatting:'; echo \"$fmt_out\"; echo ''; echo 'gofmt diff:'; gofmt -d ./client; exit 1; else echo 'Go files are formatted.'; fi"
+                ]
+            }
+        },
+
+        {
+            "name": "[GOFMT] Fix client",
+            "type": "node",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "runtimeExecutable": "powershell",
+                "args": [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-Command",
+                    "$fmt = gofmt -w ./client; if ($fmt) { Write-Host 'Go files need formatting:'; $fmt; Write-Host ''; Write-Host 'gofmt diff:'; gofmt -d ./client; exit 1 } else { Write-Host 'Go files are formatted.' }"
+                ]
+            },
+            "linux": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "fmt_out=\"$(gofmt -w ./client)\"; if [ -n \"$fmt_out\" ]; then echo 'Go files need formatting:'; echo \"$fmt_out\"; echo ''; echo 'gofmt diff:'; gofmt -d ./client; exit 1; else echo 'Go files are formatted.'; fi"
+                ]
+            },
+            "osx": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "fmt_out=\"$(gofmt -w ./client)\"; if [ -n \"$fmt_out\" ]; then echo 'Go files need formatting:'; echo \"$fmt_out\"; echo ''; echo 'gofmt diff:'; gofmt -d ./client; exit 1; else echo 'Go files are formatted.'; fi"
+                ]
+            }
+        },
+
+        {
+            "name": "[RUFF] Check All",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "ruff",
+            "args": [
+                "check",
+                "."
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
+            "name": "[RUFF] Fix All",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "ruff",
+            "args": [
+                "fix",
+                "."
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
+            "name": "[BANDIT] Check All",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "bandit",
+            "args": [
+                "-c", "_bandit.yaml",
+                "-ll",
+                "-r", ".",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
+            "name": "Run test.py in Maya",
+            "type": "node",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "runtimeExecutable": "powershell",
+                "args": [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-Command",
+                    "D:\\blenders\\5.1.1\\blender.exe --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
+                ]
+            },
+            "linux": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit"
+                ]
+            },
+            "osx": {
+                "runtimeExecutable": "/bin/bash",
+                "args": [
+                    "-c",
+                    "/Applications/Blender.app/Contents/MacOS/Blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
+                ]
+            }
+        },
+
+        {
+            "name": "[PYDOCS] Check All",
+            "type": "node",
+            "request": "launch",
+            "args": ["."],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+
+            "windows": {
+                "runtimeExecutable": "${workspaceFolder}/.venv/Scripts/pydoclint.exe",
+            },
+            "linux": {
+                "runtimeExecutable": "${workspaceFolder}/.venv/bin/pydoclint",
+            },
+            "osx": {
+                "runtimeExecutable": "${workspaceFolder}/.venv/bin/pydoclint",
+            }
+        },
+
+        {
+            "name": "Build Release Zip",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "program": "${workspaceFolder}/dev.py",
+            "args": [
+                "build",
+            ],
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+    ]
+}
