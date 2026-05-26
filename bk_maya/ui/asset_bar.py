@@ -46,7 +46,10 @@ from ..api import client as api
 
 log = logging.getLogger(__name__)
 
-CONTROL_NAME  = "BlenderKitAssetBar"
+# NOTE: Bumped from "BlenderKitAssetBar" so old workspaceControl state
+# (created without ``retain``/``closeCommand``) from prior sessions is
+# bypassed and the close-protection flags below actually take effect.
+CONTROL_NAME  = "BlenderKitAssetBarV2"
 GRID_SPACING  = 6
 PAGE_SIZE     = 24
 
@@ -1382,12 +1385,25 @@ class _FiltersPanel(QWidget):
 # ---------------------------------------------------------------------------
 
 class _LoginBanner(QWidget):
+    """Status banner shown at the top of the asset bar.
+
+    Two modes:
+      * "info"  — gentle reminder that the user isn't logged in.
+      * "error" — login or download failed.  Exposes Retry / Settings /
+        Paste API key / Show logs actions so the user can recover without
+        leaving the asset bar.
+    """
+
     login_clicked = Signal()
+    open_settings_clicked = Signal()
+    show_logs_clicked = Signal()
+    dismiss_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
 
         logo_lbl = QLabel()
         logo_pix = bk_icons.logo_pixmap(40)
@@ -1395,21 +1411,118 @@ class _LoginBanner(QWidget):
             logo_lbl.setPixmap(logo_pix)
         layout.addWidget(logo_lbl)
 
-        lbl = QLabel("Not logged in — some results may be limited.")
-        lbl.setStyleSheet("color: #c8d0e0; font-size: 11px;")
-        layout.addWidget(lbl)
-        layout.addStretch()
-        btn = QPushButton("Log in")
-        btn.setFixedWidth(56)
-        btn.clicked.connect(self.login_clicked)
-        layout.addWidget(btn)
+        self._lbl = QLabel("Not logged in — some results may be limited.")
+        self._lbl.setStyleSheet("color: #c8d0e0; font-size: 11px;")
+        self._lbl.setWordWrap(True)
+        layout.addWidget(self._lbl, stretch=1)
+
+        self._login_btn = QPushButton("Log in")
+        self._login_btn.setFixedWidth(70)
+        self._login_btn.clicked.connect(self.login_clicked)
+        layout.addWidget(self._login_btn)
+
+        self._settings_btn = QPushButton("Settings…")
+        self._settings_btn.setFixedWidth(80)
+        self._settings_btn.clicked.connect(self.open_settings_clicked)
+        self._settings_btn.setVisible(False)
+        layout.addWidget(self._settings_btn)
+
+        self._logs_btn = QPushButton("Logs")
+        self._logs_btn.setFixedWidth(54)
+        self._logs_btn.clicked.connect(self.show_logs_clicked)
+        self._logs_btn.setVisible(False)
+        layout.addWidget(self._logs_btn)
+
+        self._dismiss_btn = QPushButton("✕")
+        self._dismiss_btn.setFixedWidth(24)
+        self._dismiss_btn.clicked.connect(self.dismiss_clicked)
+        self._dismiss_btn.setVisible(False)
+        layout.addWidget(self._dismiss_btn)
+
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self._apply_info_style()
+
+    def _apply_info_style(self) -> None:
         self.setStyleSheet("background: #334066;")
+        self._lbl.setStyleSheet("color: #c8d0e0; font-size: 11px;")
+
+    def _apply_error_style(self) -> None:
+        self.setStyleSheet("background: #6e2b2b;")
+        self._lbl.setStyleSheet("color: #ffe0e0; font-size: 11px;")
+
+    def show_info(self, message: str = "Not logged in — some results may be limited.") -> None:
+        self._lbl.setText(message)
+        self._apply_info_style()
+        self._login_btn.setVisible(True)
+        self._login_btn.setText("Log in")
+        self._login_btn.setEnabled(True)
+        self._settings_btn.setVisible(False)
+        self._logs_btn.setVisible(False)
+        self._dismiss_btn.setVisible(False)
+
+    def show_error(self, message: str, *, retry_label: str = "Retry") -> None:
+        self._lbl.setText(message)
+        self._apply_error_style()
+        self._login_btn.setVisible(True)
+        self._login_btn.setText(retry_label)
+        self._login_btn.setEnabled(True)
+        self._settings_btn.setVisible(True)
+        self._logs_btn.setVisible(True)
+        self._dismiss_btn.setVisible(True)
+
+    def set_busy(self, busy: bool, busy_text: str = "Working…") -> None:
+        self._login_btn.setEnabled(not busy)
+        if busy:
+            self._login_btn.setText(busy_text)
 
 
 # ---------------------------------------------------------------------------
 # Main panel widget
 # ---------------------------------------------------------------------------
+
+class _BrandHeader(QWidget):
+    """Blue title strip with the BlenderKit logo, shown at the very top of
+    the asset bar.  Always visible — it survives Maya redocking and floating
+    the workspaceControl, so the panel keeps its identity regardless of how
+    Maya chrome renders the tab.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("BKBrandHeader")
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QWidget#BKBrandHeader {"
+            "  background-color: #2a6bd6;"   # BlenderKit blue
+            "  border-bottom: 1px solid #1d4f9e;"
+            "}"
+            "QLabel#BKBrandText {"
+            "  color: white;"
+            "  font-size: 13px;"
+            "  font-weight: 600;"
+            "  letter-spacing: 0.3px;"
+            "}"
+        )
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 4, 10, 4)
+        row.setSpacing(8)
+
+        logo = QLabel(self)
+        try:
+            pix = bk_icons.logo_pixmap(24)
+            if pix and not pix.isNull():
+                logo.setPixmap(pix)
+        except Exception:  # noqa: BLE001
+            pass
+        row.addWidget(logo)
+
+        text = QLabel("BlenderKit", self)
+        text.setObjectName("BKBrandText")
+        row.addWidget(text)
+        row.addStretch()
+
 
 class AssetBarWidget(QWidget):
 
@@ -1422,8 +1535,14 @@ class AssetBarWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self._brand = _BrandHeader(self)
+        layout.addWidget(self._brand)
+
         self._login_banner = _LoginBanner()
         self._login_banner.login_clicked.connect(self._do_login)
+        self._login_banner.open_settings_clicked.connect(self._open_settings)
+        self._login_banner.show_logs_clicked.connect(self._show_logs)
+        self._login_banner.dismiss_clicked.connect(self._dismiss_banner)
         layout.addWidget(self._login_banner)
 
         self._search_bar = SearchBar()
@@ -1446,14 +1565,64 @@ class AssetBarWidget(QWidget):
         QTimer.singleShot(500, self._default_search)
 
     def _refresh_login_state(self) -> None:
-        self._login_banner.setVisible(not auth.is_logged_in())
+        if auth.is_logged_in():
+            self._login_banner.setVisible(False)
+        else:
+            self._login_banner.show_info()
+            self._login_banner.setVisible(True)
 
     def _do_login(self) -> None:
+        self._login_banner.set_busy(True, "Waiting for browser…")
+
         def _run() -> None:
-            ok = auth.login()
-            if ok:
-                self._refresh_login_state()
+            try:
+                ok = auth.login()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Login raised: %s", exc)
+                ok = False
+                err = str(exc)
+            else:
+                err = "" if ok else "Login failed or was cancelled. See logs for details."
+            # Marshal back onto the GUI thread
+            QTimer.singleShot(0, lambda: self._on_login_result(ok, err))
+
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_login_result(self, ok: bool, err: str) -> None:
+        if ok:
+            self._refresh_login_state()
+            return
+        self._login_banner.show_error(
+            err or "Login failed. Try again, open Settings to paste an API key, or check logs.",
+            retry_label="Try again",
+        )
+        self._login_banner.setVisible(True)
+
+    def _open_settings(self) -> None:
+        try:
+            from .settings_dialog import open_settings
+            open_settings(tab="Account")
+        except Exception as exc:  # noqa: BLE001
+            log.error("Cannot open settings dialog: %s", exc)
+
+    def _show_logs(self) -> None:
+        # Open Maya's Script Editor — the simplest "show logs" surface
+        try:
+            import maya.cmds as cmds  # type: ignore[import-not-found]
+            cmds.ScriptEditor()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Cannot open Maya Script Editor: %s", exc)
+
+    def _dismiss_banner(self) -> None:
+        if auth.is_logged_in():
+            self._login_banner.setVisible(False)
+        else:
+            self._login_banner.show_info()
+
+    def show_error(self, message: str) -> None:
+        """Public entry: surface a non-login error (e.g. download failure)."""
+        self._login_banner.show_error(message, retry_label="Dismiss")
+        self._login_banner.setVisible(True)
 
     def _on_search(self, query: str, asset_type: str) -> None:
         self._grid.start_search(
@@ -1525,8 +1694,27 @@ class AssetBarWidget(QWidget):
 def open_asset_bar() -> None:
     """Create or restore the BlenderKit side panel (docked by default)."""
     if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
-        cmds.workspaceControl(CONTROL_NAME, edit=True, restore=True)
+        cmds.workspaceControl(
+            CONTROL_NAME, edit=True, restore=True, visible=True,
+        )
         return
+
+    # Best-effort: clean up the *legacy* control name from older revisions
+    # of this addon so we don't leave a dead tab in the Maya UI.
+    for legacy in ("BlenderKitAssetBar",):
+        try:
+            if cmds.workspaceControl(legacy, query=True, exists=True):
+                cmds.deleteUI(legacy, control=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ``closeCommand`` fires when the user clicks the workspaceControl's X
+    # button.  We immediately re-show the panel so the bar can't be closed
+    # accidentally — the BlenderKit menu is the only way to dismiss it.
+    close_cmd = (
+        "import bk_maya.ui.asset_bar as _ab; "
+        "_ab._reopen_on_close()"
+    )
 
     kw: dict = dict(
         label        = "BlenderKit",
@@ -1535,7 +1723,8 @@ def open_asset_bar() -> None:
             "_ab._populate_workspace_control()"
         ),
         initialWidth = 340,
-        retain       = False,
+        retain       = True,
+        closeCommand = close_cmd,
     )
 
     try:
@@ -1556,6 +1745,36 @@ def set_tile_size(size: int) -> None:
     if _current_bar is not None:
         _current_bar._grid.set_tile_size(size)
     log.info("Thumbnail size → %d px", size)
+
+
+def notify_error(message: str) -> None:
+    """Surface an error on the asset bar's status banner.
+
+    Safe to call from non-GUI threads — marshals to the main thread.
+    """
+    bar = _current_bar
+    if bar is None:
+        log.warning("notify_error called but asset bar is not open: %s", message)
+        return
+    QTimer.singleShot(0, lambda: bar.show_error(message))
+
+
+def _reopen_on_close() -> None:
+    """Re-show the asset bar after Maya tries to close it via the X button.
+
+    Wired up as the ``closeCommand`` of the workspaceControl so that the
+    panel cannot be dismissed accidentally.  The BlenderKit main-menu entry
+    is the only intentional way to close/reopen the bar.
+    """
+    try:
+        if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
+            cmds.evalDeferred(
+                lambda: cmds.workspaceControl(
+                    CONTROL_NAME, edit=True, restore=True, visible=True,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_reopen_on_close failed: %s", exc)
 
 
 def _populate_workspace_control() -> None:

@@ -98,8 +98,12 @@ def _generate_pkce_pair() -> tuple[str, str]:
 # Local callback server
 # -------------------------------------------------------------------------
 
-_CALLBACK_PORT = 62485
-_REDIRECT_URI = f"http://localhost:{_CALLBACK_PORT}/consumer/exchange/"
+# Preferred ports — these are the exact ports the BlenderKit OAuth app has
+# whitelisted as valid ``redirect_uri`` hosts (mirrors
+# ``blenderkit_addon/global_vars.py::CLIENT_PORTS``).  Using any other port
+# results in "Error: invalid_request — Mismatching redirect URI." from the
+# authorisation endpoint.  Order matches the addon's default ordering.
+_CALLBACK_PORT_CANDIDATES = (62485, 65425, 55428, 49452, 35452, 25152, 5152, 1234)
 
 _auth_code_event = threading.Event()
 _received_code: str = ""
@@ -129,11 +133,27 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         _auth_code_event.set()
 
 
-def _start_callback_server() -> http.server.HTTPServer:
-    server = http.server.HTTPServer(("localhost", _CALLBACK_PORT), _CallbackHandler)
-    thread = threading.Thread(target=server.handle_request, daemon=True)
-    thread.start()
-    return server
+def _start_callback_server() -> tuple[http.server.HTTPServer, int]:
+    """Bind the callback server to the first port that works.
+
+    Returns ``(server, port)``.  Raises ``OSError`` if every candidate fails.
+    """
+    last_err: OSError | None = None
+    for port in _CALLBACK_PORT_CANDIDATES:
+        try:
+            server = http.server.HTTPServer(("localhost", port), _CallbackHandler)
+        except OSError as exc:
+            log.debug("OAuth callback port %s unavailable: %s", port, exc)
+            last_err = exc
+            continue
+        bound_port = server.server_address[1]
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        log.info("OAuth callback server bound on port %s", bound_port)
+        return server, bound_port
+    raise OSError(
+        f"Could not bind OAuth callback server on any of {_CALLBACK_PORT_CANDIDATES}: {last_err}"
+    )
 
 
 # -------------------------------------------------------------------------
@@ -183,6 +203,22 @@ def login(timeout: float = 120.0) -> bool:
     code_verifier, code_challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(16)
 
+    try:
+        server, port = _start_callback_server()
+    except OSError as exc:
+        msg = (
+            f"Could not bind the OAuth callback server on any of the BlenderKit "
+            f"whitelisted ports {_CALLBACK_PORT_CANDIDATES}. "
+            f"They may be blocked by Windows excluded port ranges, Hyper-V, or "
+            f"another running process. "
+            f"Workaround: open Settings → Account and paste an API key from "
+            f"your blenderkit.com profile. (Last error: {exc})"
+        )
+        log.error(msg)
+        raise RuntimeError(msg) from exc
+
+    redirect_uri = f"http://localhost:{port}/consumer/exchange/"
+
     auth_url = (
         f"{api.BASE_URL}/o/authorize/"
         f"?client_id={api.CLIENT_ID}"
@@ -190,11 +226,10 @@ def login(timeout: float = 120.0) -> bool:
         f"&state={state}"
         f"&code_challenge={code_challenge}"
         f"&code_challenge_method=S256"
-        f"&redirect_uri={urllib.parse.quote(_REDIRECT_URI, safe='')}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
     )
 
-    server = _start_callback_server()
-    log.info("Opening browser for BlenderKit login…")
+    log.info("Opening browser for BlenderKit login (callback on port %s)…", port)
     webbrowser.open_new_tab(auth_url)
 
     if not _auth_code_event.wait(timeout=timeout):
@@ -214,7 +249,7 @@ def login(timeout: float = 120.0) -> bool:
 
     try:
         tokens = api.exchange_code_for_tokens(
-            _received_code, code_verifier, _REDIRECT_URI
+            _received_code, code_verifier, redirect_uri
         )
     except Exception as exc:
         log.error("Token exchange failed: %s", exc)

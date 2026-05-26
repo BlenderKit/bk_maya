@@ -666,6 +666,7 @@ class DragSession(QObject):
         super().__init__()
         self._vp_widget: "QWidget | None" = None
         self._locator_name: str | None = None
+        self._download_started = False
         self._poll_timer: "QTimer | None" = None  # polls cursor position
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -765,6 +766,7 @@ class DragSession(QObject):
             )
         else:
             self._publish_bbox_to_locator()
+            self._publish_proxor_to_locator()
 
         # Override cursor with thumbnail
         QApplication.setOverrideCursor(_make_cursor(thumb_path))
@@ -1044,6 +1046,27 @@ class DragSession(QObject):
         except Exception as exc:
             log.warning("Failed to publish bbox to locator: %s", exc)
 
+    def _publish_proxor_to_locator(self) -> None:
+        """Register cached proxor polylines for the locator's draw override."""
+        if self._locator_name is None:
+            return
+        try:
+            from bk_maya.plugins import placement_locator as plc
+            plc.set_proxor_lines(self._locator_name,
+                                 list(_active_state.proxor_lines or []))
+            # Seed the label with the asset name; status fills in once
+            # the download controller starts firing progress events.
+            asset_name = ""
+            try:
+                asset_name = str(_active_state.asset_data.get("name") or "")
+            except Exception:
+                pass
+            plc.set_label(self._locator_name, name=asset_name, status="Ready to drop")
+            log.info("[PROXOR] published %d polyline(s) on %s",
+                     len(_active_state.proxor_lines or []), self._locator_name)
+        except Exception as exc:
+            log.debug("Could not publish proxor lines: %s", exc)
+
     def _on_wheel(self, event: QEvent) -> bool:
         # We accept wheel events anywhere while a drag session is active
         # (Maya may dispatch the event to a child of the 3D view rather
@@ -1119,7 +1142,12 @@ class DragSession(QObject):
         try:
             import importlib
             bk_dl = importlib.import_module("bk_maya.core.download")
-            bk_dl.download_asset(asset, location=loc, rotation_y=rot_y)
+            bk_dl.download_asset(
+                asset,
+                location=loc,
+                rotation_y=rot_y,
+                locator_name=self._locator_name or "",
+            )
         except ModuleNotFoundError:
             log.info(
                 "download module not implemented yet – stub only. "
@@ -1158,8 +1186,12 @@ class DragSession(QObject):
         except Exception:
             pass
 
-        if self._locator_name is not None:
+        # If a download was triggered, hand ownership of the locator off to
+        # the download controller — it will delete it on success / failure.
+        if self._locator_name is not None and not self._download_started:
             _delete_locator()
+            self._locator_name = None
+        else:
             self._locator_name = None
 
         # Clear the persistent HUD hint.

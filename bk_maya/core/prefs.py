@@ -63,6 +63,9 @@ class _Prefs:
     max_resolution: str = "2048"
     """Cap texture sizes on import.  One of: 512 1024 2048 4096 8192 ORIGINAL."""
 
+    blender_exe: str = ""
+    """Path to blender executable.  Empty = auto-detect (Blender 5.0+ required)."""
+
     # ── Search filters ─────────────────────────────────────────────────────
     search_texture_resolution: bool = False
     """Limit search results by texture resolution."""
@@ -139,16 +142,13 @@ class _Prefs:
     # ------------------------------------------------------------------
 
     def global_dir_resolved(self) -> str:
-        """Return global_dir, falling back to a sensible default."""
+        """Return global_dir, falling back to a sensible default.
+
+        Matches the Blender add-on's default: ``~/blenderkit_data``.
+        """
         if self.global_dir:
             return self.global_dir
-        if sys.platform == "win32":
-            base = os.path.join(os.environ.get("USERPROFILE", ""), "Documents")
-        elif sys.platform == "darwin":
-            base = os.path.expanduser("~/Documents")
-        else:
-            base = os.path.expanduser("~")
-        return os.path.join(base, "BlenderKit")
+        return os.path.expanduser("~/blenderkit_data")
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -191,6 +191,18 @@ class _Prefs:
             log.debug("No prefs file yet at %s — using defaults.", path)
         except Exception as exc:
             log.warning("Could not load prefs (%s) — using defaults.", exc)
+        # Migration: an earlier version defaulted global_dir to
+        # ``<Documents>/BlenderKit``.  Clear it so the new default
+        # (``~/blenderkit_data``) takes effect.
+        if self.global_dir:
+            legacy = (
+                os.path.join(os.environ.get("USERPROFILE", ""), "Documents", "BlenderKit")
+                if sys.platform == "win32"
+                else os.path.expanduser("~/Documents/BlenderKit")
+            )
+            if os.path.normcase(os.path.normpath(self.global_dir)) == os.path.normcase(os.path.normpath(legacy)):
+                log.info("Migrating legacy default download dir %r → using new default", self.global_dir)
+                self.global_dir = ""
 
 
 # ---------------------------------------------------------------------------

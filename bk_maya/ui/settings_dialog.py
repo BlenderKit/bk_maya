@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from typing import Any
 
@@ -179,11 +180,39 @@ class _FilesTab(QWidget):
 
         self._res_combo = QComboBox()
         for opt in _MAX_RESOLUTION_OPTIONS:
-            label = opt if opt == "ORIGINAL" else f"{opt} × {opt}"
+            label = "ORIGINAL FILE" if opt == "ORIGINAL" else f"{opt}x{opt}"
             self._res_combo.addItem(label, userData=opt)
         current_idx = _MAX_RESOLUTION_OPTIONS.index(prefs.max_resolution) if prefs.max_resolution in _MAX_RESOLUTION_OPTIONS else 2
         self._res_combo.setCurrentIndex(current_idx)
         layout.addWidget(self._res_combo)
+
+        # ── Blender executable ────────────────────────────────────────────
+        layout.addWidget(_section("Blender Executable"))
+        layout.addWidget(_hr())
+        layout.addWidget(_note(
+            "Path to blender.exe. Used to fetch and convert assets in the "
+            "background. Blender 5.0 or newer is required. Leave blank to "
+            "auto-detect."
+        ))
+
+        be_row = QHBoxLayout()
+        self._blender_edit = QLineEdit(prefs.blender_exe)
+        self._blender_edit.setPlaceholderText("auto-detect")
+        be_row.addWidget(self._blender_edit)
+        be_browse = QPushButton("Browse…")
+        be_browse.setFixedWidth(70)
+        be_browse.clicked.connect(self._browse_blender)
+        be_row.addWidget(be_browse)
+        be_detect = QPushButton("Auto-detect")
+        be_detect.setFixedWidth(90)
+        be_detect.clicked.connect(self._autodetect_blender)
+        be_row.addWidget(be_detect)
+        layout.addLayout(be_row)
+
+        self._blender_status = QLabel("")
+        self._blender_status.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self._blender_status)
+        self._refresh_blender_status()
 
         layout.addStretch()
 
@@ -192,9 +221,64 @@ class _FilesTab(QWidget):
         if path:
             self._dir_edit.setText(path)
 
+    def _browse_blender(self) -> None:
+        if os.name == "nt":
+            filt = "Blender executable (blender.exe);;All files (*)"
+        elif sys.platform == "darwin":
+            filt = "Blender (Blender);;All files (*)"
+        else:
+            filt = "Blender executable (blender);;All files (*)"
+        start = os.path.dirname(self._blender_edit.text()) or os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Blender Executable", start, filt)
+        if path:
+            self._blender_edit.setText(path)
+            self._refresh_blender_status()
+
+    def _autodetect_blender(self) -> None:
+        from ..core.blender_runner import find_blender_executable
+        # Temporarily clear the pref so auto-detection ignores any stale value
+        saved = prefs.blender_exe
+        prefs.blender_exe = ""
+        try:
+            found = find_blender_executable()
+        finally:
+            prefs.blender_exe = saved
+        if found:
+            self._blender_edit.setText(found)
+        self._refresh_blender_status()
+
+    def _refresh_blender_status(self) -> None:
+        from ..core.blender_runner import (
+            query_blender_version, version_meets_min, MIN_BLENDER_MAJOR,
+        )
+        path = self._blender_edit.text().strip()
+        if not path:
+            self._blender_status.setText("No path set — will auto-detect at runtime.")
+            self._blender_status.setStyleSheet("color: #888; font-size: 11px;")
+            return
+        if not os.path.isfile(path):
+            self._blender_status.setText("⚠ File not found.")
+            self._blender_status.setStyleSheet("color: #cc6666; font-size: 11px;")
+            return
+        version = query_blender_version(path)
+        if not version:
+            self._blender_status.setText("⚠ Could not read Blender version.")
+            self._blender_status.setStyleSheet("color: #cc6666; font-size: 11px;")
+            return
+        v_str = f"{version[0]}.{version[1]}.{version[2]}"
+        if version_meets_min(version):
+            self._blender_status.setText(f"✓ Blender {v_str} detected.")
+            self._blender_status.setStyleSheet("color: #88cc88; font-size: 11px;")
+        else:
+            self._blender_status.setText(
+                f"⚠ Blender {v_str} is too old. Requires {MIN_BLENDER_MAJOR}.0 or newer."
+            )
+            self._blender_status.setStyleSheet("color: #cc6666; font-size: 11px;")
+
     def apply(self) -> None:
         prefs.global_dir = self._dir_edit.text().strip()
         prefs.max_resolution = self._res_combo.currentData()
+        prefs.blender_exe = self._blender_edit.text().strip()
 
 
 # ---------------------------------------------------------------------------
@@ -479,11 +563,19 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
-def open_settings(parent: QWidget | None = None) -> None:
-    """Show the settings dialog (singleton — raises existing one if open)."""
+def open_settings(parent: QWidget | None = None, tab: str | None = None) -> None:
+    """Show the settings dialog (singleton — raises existing one if open).
+
+    If *tab* is given (e.g. ``"Account"``), the dialog opens on that tab.
+    """
     global _dialog_instance
     if _dialog_instance is None or not _dialog_instance.isVisible():
         _dialog_instance = SettingsDialog(parent)
+    if tab:
+        for i in range(_dialog_instance._tabs.count()):
+            if _dialog_instance._tabs.tabText(i).lower() == tab.lower():
+                _dialog_instance._tabs.setCurrentIndex(i)
+                break
     _dialog_instance.show()
     _dialog_instance.raise_()
     _dialog_instance.activateWindow()

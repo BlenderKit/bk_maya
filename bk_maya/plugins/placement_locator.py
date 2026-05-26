@@ -27,6 +27,61 @@ log = logging.getLogger("bk_maya.placement_locator")
 
 
 # ---------------------------------------------------------------------------
+# Proxor registry
+# ---------------------------------------------------------------------------
+# Proxor data is a list of polylines — too large/structured to store as a
+# Maya node attribute.  We stash it in a module-level dict keyed by the
+# locator's node name; the draw override looks it up each frame.  The
+# placement layer pushes to it when the locator is created and the
+# download controller clears it on completion / failure.
+
+_proxor_registry: dict[str, list] = {}
+
+
+def set_proxor_lines(node_name: str, lines: list) -> None:
+    """Register proxor polylines for *node_name* (use ``[]`` to clear)."""
+    if lines:
+        _proxor_registry[node_name] = lines
+    else:
+        _proxor_registry.pop(node_name, None)
+
+
+def clear_proxor_lines(node_name: str) -> None:
+    """Remove any proxor data registered for *node_name*."""
+    _proxor_registry.pop(node_name, None)
+
+
+# ---------------------------------------------------------------------------
+# Label registry (asset name + current step)
+# ---------------------------------------------------------------------------
+# Same idea as the proxor registry — short strings shown as 3D text on top
+# of the bbox helper while a download is running.
+
+_label_registry: dict[str, dict] = {}
+
+
+def set_label(node_name: str, name: str | None = None,
+              status: str | None = None) -> None:
+    """Update the on-screen labels for *node_name*.
+
+    Pass only the keyword(s) you want to change; ``None`` leaves a field
+    untouched.  Pass empty string to clear a field.
+    """
+    if not node_name:
+        return
+    entry = _label_registry.setdefault(node_name, {"name": "", "status": ""})
+    if name is not None:
+        entry["name"] = str(name)
+    if status is not None:
+        entry["status"] = str(status)
+
+
+def clear_label(node_name: str) -> None:
+    """Remove any label data registered for *node_name*."""
+    _label_registry.pop(node_name, None)
+
+
+# ---------------------------------------------------------------------------
 # Maya registration constants
 # ---------------------------------------------------------------------------
 
@@ -164,6 +219,17 @@ class BkPlacementLocator(omui2.MPxLocatorNode):
         nAttr.writable = True
         BkPlacementLocator.addAttribute(BkPlacementLocator.bbox_max_attr)
 
+        # Download progress 0..1 (used to drive a progress ring in the gizmo)
+        BkPlacementLocator.download_progress_attr = nAttr.create(
+            "downloadProgress", "dlProg", om2.MFnNumericData.kFloat, 0.0
+        )
+        nAttr.setMin(0.0)
+        nAttr.setMax(1.0)
+        nAttr.storable = True
+        nAttr.keyable = True
+        nAttr.writable = True
+        BkPlacementLocator.addAttribute(BkPlacementLocator.download_progress_attr)
+
     def compute(self, plug, dataBlock):
         # No computation needed, but method must exist for dirty propagation
         return None
@@ -249,8 +315,18 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         hit_floor = plug_hit_floor.asBool()
         plug_dl = om2.MPlug(node, BkPlacementLocator.download_state_attr)
         dl_state = plug_dl.asShort()
+        plug_prog = om2.MPlug(node, BkPlacementLocator.download_progress_attr)
+        dl_prog = max(0.0, min(1.0, float(plug_prog.asFloat())))
         bb_min = _read_point3(BkPlacementLocator.bbox_min_attr)
         bb_max = _read_point3(BkPlacementLocator.bbox_max_attr)
+
+        # Look up proxor polylines stashed by the placement layer (by node name).
+        try:
+            node_name = om2.MFnDependencyNode(node).name()
+        except Exception:
+            node_name = ""
+        proxor_lines = _proxor_registry.get(node_name) or []
+        label_entry  = _label_registry.get(node_name) or {}
 
         # Compose snap dict for drawing
         data.snap = {
@@ -259,8 +335,12 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             "has_hit": has_hit,
             "hit_floor": hit_floor,
             "download_state": dl_state,
+            "download_progress": dl_prog,
             "bbox_min": bb_min,
             "bbox_max": bb_max,
+            "proxor_lines": proxor_lines,
+            "label_name":   label_entry.get("name", ""),
+            "label_status": label_entry.get("status", ""),
             "active": True,
         }
         log.warning("[DRAW] prepareForDraw ATTR snap=%s", data.snap)
@@ -276,9 +356,15 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
 
         has_hit  = bool(snap.get("has_hit"))
         on_floor = bool(snap.get("hit_floor"))
-        log.warning("[DRAW] has_hit=%s on_floor=%s", has_hit, on_floor)
+        dl_state = int(snap.get("download_state") or 0)
+        dl_prog  = float(snap.get("download_progress") or 0.0)
+        downloading = dl_state == 1
+        log.warning("[DRAW] has_hit=%s on_floor=%s dl_state=%s prog=%.2f",
+                    has_hit, on_floor, dl_state, dl_prog)
 
-        if has_hit and on_floor:
+        if downloading:
+            col = om2.MColor((0.16, 0.42, 0.84, 1.0))    # BlenderKit blue — downloading
+        elif has_hit and on_floor:
             col = om2.MColor((0.39, 0.78, 1.00, 1.0))    # cyan  – floor plane
         elif has_hit:
             col = om2.MColor((0.00, 0.86, 0.31, 1.0))    # green – geometry hit
@@ -303,31 +389,119 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
 
         drawManager.beginDrawable()
 
+        proxor   = snap.get("proxor_lines") or []
+        cx, cy, cz = loc
+        height   = max(1e-3, bbox_max[1] - bbox_min[1])
+        fill_top = bbox_min[1] + dl_prog * height       # local-space y cut-off
+
         # ── Bounding-box edges + orientation arrow lip ────────────────
-        drawManager.setColor(col)
-        drawManager.setLineWidth(3.0)
-        corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max)]
-        for ai, bi in _BBOX_EDGES:
-            drawManager.line(corners[ai], corners[bi])
-        for ai, bi in _ARROW_EDGES:
-            drawManager.line(corners[ai], corners[bi])
+        #  Hide the outer bbox when a proxor wireframe is available — the
+        #  proxor itself communicates the shape better, and the user asked
+        #  for "only the mesh, no glowing outline" in Maya.
+        if not proxor:
+            drawManager.setColor(col)
+            drawManager.setLineWidth(3.0)
+            corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max)]
+            for ai, bi in _BBOX_EDGES:
+                drawManager.line(corners[ai], corners[bi])
+            for ai, bi in _ARROW_EDGES:
+                drawManager.line(corners[ai], corners[bi])
+
+            # ── Progress fill: bottom slab up to ``dl_prog`` of bbox height ──
+            if downloading and dl_prog > 0.0:
+                fill_max = (bbox_max[0], fill_top, bbox_max[2])
+                fill_corners = [om2.MPoint(*c) for c in
+                                _bbox_corners(loc, rot_y, bbox_min, fill_max)]
+                fill_col = om2.MColor((0.30, 0.65, 1.00, 1.0))
+                drawManager.setColor(fill_col)
+                drawManager.setLineWidth(2.0)
+                for ai, bi in _BBOX_EDGES:
+                    drawManager.line(fill_corners[ai], fill_corners[bi])
 
         # ── Proxor wireframe (optional) ─────────────────────────────────
-        proxor = snap.get("proxor_lines") or []
         if proxor:
-            drawManager.setColor(om2.MColor((1.0, 0.92, 0.42, 0.9)))
-            drawManager.setLineWidth(1.5)
-            cx, cy, cz = loc
-            for polyline in proxor:
-                if len(polyline) < 2:
-                    continue
-                for i in range(len(polyline) - 1):
-                    ax, ay, az = _rotate_y(polyline[i],     rot_y)
-                    bx, by, bz = _rotate_y(polyline[i + 1], rot_y)
+            # Two-pass clip on the local-y threshold so the proxor visually
+            # "fills up" as the download progresses.  Below the cut-off uses
+            # the bright fill colour; above uses the muted outline colour.
+            below_col = (om2.MColor((0.30, 0.65, 1.00, 1.0)) if downloading
+                         else om2.MColor((1.0, 0.92, 0.42, 0.9)))
+            above_col = om2.MColor((0.55, 0.55, 0.55, 0.55))
+
+            def _emit(seg_pts, color, width):
+                drawManager.setColor(color)
+                drawManager.setLineWidth(width)
+                for (p0, p1) in seg_pts:
+                    ax, ay, az = _rotate_y(p0, rot_y)
+                    bx, by, bz = _rotate_y(p1, rot_y)
                     drawManager.line(
                         om2.MPoint(cx + ax, cy + ay, cz + az),
                         om2.MPoint(cx + bx, cy + by, cz + bz),
                     )
+
+            below_segs: list[tuple] = []
+            above_segs: list[tuple] = []
+            for polyline in proxor:
+                if len(polyline) < 2:
+                    continue
+                for i in range(len(polyline) - 1):
+                    a = polyline[i]
+                    b = polyline[i + 1]
+                    if not downloading:
+                        below_segs.append((a, b))
+                        continue
+                    ya_below = a[1] <= fill_top
+                    yb_below = b[1] <= fill_top
+                    if ya_below and yb_below:
+                        below_segs.append((a, b))
+                    elif (not ya_below) and (not yb_below):
+                        above_segs.append((a, b))
+                    else:
+                        denom = (b[1] - a[1]) or 1e-9
+                        t = (fill_top - a[1]) / denom
+                        t = max(0.0, min(1.0, t))
+                        mid = (
+                            a[0] + (b[0] - a[0]) * t,
+                            fill_top,
+                            a[2] + (b[2] - a[2]) * t,
+                        )
+                        if ya_below:
+                            below_segs.append((a, mid))
+                            above_segs.append((mid, b))
+                        else:
+                            above_segs.append((a, mid))
+                            below_segs.append((mid, b))
+
+            if above_segs:
+                _emit(above_segs, above_col, 1.0)
+            if below_segs:
+                _emit(below_segs, below_col, 1.8)
+
+        # ── Asset name + current step (3D text floating above the bbox) ─
+        label_name   = snap.get("label_name")   or ""
+        label_status = snap.get("label_status") or ""
+        if label_name or label_status:
+            # Anchor a little above the bbox top so text doesn't z-fight
+            # with the wireframe.
+            top_y  = bbox_max[1] + max(2.0, 0.05 * height)
+            anchor = om2.MPoint(cx, cy + top_y, cz)
+            try:
+                drawManager.setFontSize(12)
+            except Exception:
+                pass
+            if label_name:
+                drawManager.setColor(om2.MColor((1.0, 1.0, 1.0, 1.0)))
+                drawManager.text(anchor, label_name, omr2.MUIDrawManager.kCenter)
+            if label_status:
+                status_anchor = om2.MPoint(
+                    cx, cy + top_y - max(1.5, 0.03 * height), cz
+                )
+                try:
+                    drawManager.setFontSize(10)
+                except Exception:
+                    pass
+                drawManager.setColor(om2.MColor((0.75, 0.85, 1.0, 1.0)))
+                drawManager.text(status_anchor, label_status,
+                                 omr2.MUIDrawManager.kCenter)
 
         drawManager.endDrawable()
 
