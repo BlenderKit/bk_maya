@@ -45,8 +45,20 @@ def search(
     page_size: int = 24,
     page_offset: int = 0,
     free_only: bool = False,
+    quality_limit: int = 0,    # show only quality >= this (0 = no limit)
+    license_filter: str = "ANY",  # ANY, ROYALTY_FREE, FULL, USAGE_RIGHTS
+    animated_only: bool = False,
     texture_res_min: int = 0,
     texture_res_max: int = 0,
+    file_size_min: int = 0,    # MB
+    file_size_max: int = 0,    # MB
+    poly_count_min: int = 0,
+    poly_count_max: int = 0,
+    style: str = "ANY",        # REALISTIC, PAINTERLY, LOWPOLY, ANIME, 2D_VECTOR, 3D_GRAPHICS, OTHER, ANY
+    condition: str = "UNSPECIFIED",  # UNSPECIFIED, NEW, USED, OLD, DESOLATE
+    design_year_min: int = 0,
+    design_year_max: int = 0,
+    geometry_nodes: bool = False,
     next_url: str = "",        # cursor URL from previous page's response
     on_results: ResultCallback | None = None,
     on_error: ErrorCallback | None = None,
@@ -67,10 +79,45 @@ def search(
             extra: dict[str, Any] = {}
             if free_only:
                 extra["is_free"] = "true"
+            if quality_limit > 0:
+                extra["quality_gte"] = quality_limit
+            if license_filter != "ANY":
+                extra["license"] = license_filter
+            if animated_only:
+                extra["animated"] = "True"  # capital T mirrors Blender's str(True)
             if texture_res_min > 0:
-                extra["texture_resolution_min"] = texture_res_min
+                extra["textureResolutionMax_gte"] = texture_res_min
             if texture_res_max > 0:
-                extra["texture_resolution_max"] = texture_res_max
+                extra["textureResolutionMax_lte"] = texture_res_max
+            # file_size in MB → server expects bytes
+            if file_size_min > 0:
+                extra["files_size_gte"] = file_size_min * 1024 * 1024
+            if file_size_max > 0:
+                extra["files_size_lte"] = file_size_max * 1024 * 1024
+            if poly_count_min > 0:
+                extra["faceCount_gte"] = poly_count_min
+            if poly_count_max > 0:
+                extra["faceCount_lte"] = poly_count_max
+            # Model-specific filters (server ignores irrelevant ones for other types)
+            if style != "ANY":
+                extra["modelStyle"] = style
+            if condition != "UNSPECIFIED":
+                extra["condition"] = condition
+            if design_year_min > 0:
+                extra["designYear_gte"] = design_year_min
+            if design_year_max > 0:
+                extra["designYear_lte"] = design_year_max
+            if geometry_nodes:
+                extra["modifiers"] = "nodes"
+
+            log.debug(
+                "search params: free=%s quality=%d license=%s animated=%s "
+                "tex=%d-%d file=%d-%d poly=%d-%d style=%s cond=%s year=%d-%d geo=%s | extra_params=%s",
+                free_only, quality_limit, license_filter, animated_only,
+                texture_res_min, texture_res_max, file_size_min, file_size_max,
+                poly_count_min, poly_count_max, style, condition,
+                design_year_min, design_year_max, geometry_nodes, extra
+            )
             data = api.search(
                 query=query,
                 asset_type=asset_type,

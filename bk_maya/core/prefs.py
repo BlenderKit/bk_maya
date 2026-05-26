@@ -76,6 +76,51 @@ class _Prefs:
     search_free_only: bool = False
     """Return only free assets."""
 
+    search_quality_limit: int = 0
+    """Minimum quality rating (0 = no limit, 1-5 scale)."""
+
+    search_license: str = "ANY"
+    """License filter (ANY, FREE, ROYALTY_FREE, FULL, USAGE_RIGHTS)."""
+
+    search_animated_only: bool = False
+    """Return only animated assets."""
+
+    search_poly_count: bool = False
+    """Limit search results by polygon count."""
+
+    search_poly_count_min: int = 0
+    """Minimum polygon count (vertices)."""
+
+    search_poly_count_max: int = 0
+    """Maximum polygon count (vertices)."""
+
+    search_style: str = "ANY"
+    """Model style filter (REALISTIC, PAINTERLY, LOWPOLY, ANIME, 2D_VECTOR, 3D_GRAPHICS, OTHER, ANY)."""
+
+    search_condition: str = "UNSPECIFIED"
+    """Model condition filter (UNSPECIFIED, NEW, USED, OLD, DESOLATE)."""
+
+    search_design_year: bool = False
+    """Limit search results by design year."""
+
+    search_design_year_min: int = 1950
+    """Minimum design year."""
+
+    search_design_year_max: int = 2030
+    """Maximum design year."""
+
+    search_file_size: bool = False
+    """Limit search results by file size."""
+
+    search_file_size_min: int = 0
+    """Minimum file size (MB)."""
+
+    search_file_size_max: int = 500
+    """Maximum file size (MB)."""
+
+    search_geometry_nodes: bool = False
+    """Show only assets using geometry nodes."""
+
     # ── Networking ─────────────────────────────────────────────────────────
     proxy_which: str = "SYSTEM"
     """Proxy mode: SYSTEM | ENVIRONMENT | NONE | CUSTOM."""

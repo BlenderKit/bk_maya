@@ -36,7 +36,7 @@ from qtpy.QtWidgets import (
     QLineEdit, QPushButton, QScrollArea,
     QLabel, QFrame, QButtonGroup, QStackedWidget,
     QCheckBox, QSpinBox, QSizePolicy, QDialog,
-    QTextEdit, QAction, QMenu, QFormLayout,
+    QTextEdit, QAction, QMenu, QFormLayout, QComboBox,
 )
 
 from ..core import auth, search as bk_search
@@ -606,8 +606,20 @@ class AssetGrid(QWidget):
         self._next_url:        str  = ""    # cursor URL for next page
         self._loading:         bool = False
         self._free_only:       bool = False
+        self._quality_limit:   int  = 0
+        self._license_filter:  str  = "ANY"
+        self._animated_only:   bool = False
         self._texture_res_min: int  = 0
         self._texture_res_max: int  = 0
+        self._file_size_min:   int  = 0
+        self._file_size_max:   int  = 0
+        self._poly_count_min:  int  = 0
+        self._poly_count_max:  int  = 0
+        self._style:           str  = "ANY"
+        self._condition:       str  = "UNSPECIFIED"
+        self._design_year_min: int  = 0
+        self._design_year_max: int  = 0
+        self._geometry_nodes:  bool = False
 
         self._tiles:     list[AssetTile] = []
         self._next_fill: int = 0
@@ -706,8 +718,20 @@ class AssetGrid(QWidget):
             query           = self._query,
             asset_type      = self._asset_type,
             free_only       = self._free_only,
+            quality_limit   = self._quality_limit,
+            license_filter  = self._license_filter,
+            animated_only   = self._animated_only,
             texture_res_min = self._texture_res_min,
             texture_res_max = self._texture_res_max,
+            file_size_min   = self._file_size_min,
+            file_size_max   = self._file_size_max,
+            poly_count_min  = self._poly_count_min,
+            poly_count_max  = self._poly_count_max,
+            style           = self._style,
+            condition       = self._condition,
+            design_year_min = self._design_year_min,
+            design_year_max = self._design_year_max,
+            geometry_nodes  = self._geometry_nodes,
             page_size       = PAGE_SIZE,
             next_url        = self._next_url,
             on_results      = self._bridge.results_ready.emit,
@@ -738,14 +762,38 @@ class AssetGrid(QWidget):
         query:           str,
         asset_type:      str,
         free_only:       bool = False,
+        quality_limit:   int  = 0,
+        license_filter:  str  = "ANY",
+        animated_only:   bool = False,
         texture_res_min: int  = 0,
         texture_res_max: int  = 0,
+        file_size_min:   int  = 0,
+        file_size_max:   int  = 0,
+        poly_count_min:  int  = 0,
+        poly_count_max:  int  = 0,
+        style:           str  = "ANY",
+        condition:       str  = "UNSPECIFIED",
+        design_year_min: int  = 0,
+        design_year_max: int  = 0,
+        geometry_nodes:  bool = False,
     ) -> None:
         self._query           = query
         self._asset_type      = asset_type
         self._free_only       = free_only
+        self._quality_limit   = quality_limit
+        self._license_filter  = license_filter
+        self._animated_only   = animated_only
         self._texture_res_min = texture_res_min
         self._texture_res_max = texture_res_max
+        self._file_size_min   = file_size_min
+        self._file_size_max   = file_size_max
+        self._poly_count_min  = poly_count_min
+        self._poly_count_max  = poly_count_max
+        self._style           = style
+        self._condition       = condition
+        self._design_year_min = design_year_min
+        self._design_year_max = design_year_max
+        self._geometry_nodes  = geometry_nodes
         self._results   = []
         self._total     = 0
         self._next_url  = ""
@@ -753,7 +801,13 @@ class AssetGrid(QWidget):
         self._next_fill = 0
         self._clear_tiles()
 
-        log.debug("start_search query=%r type=%s free=%s", query, asset_type, free_only)
+        log.debug(
+            "start_search query=%r type=%s free=%s quality=%d license=%s animated=%s "
+            "tex_res=%d-%d file_size=%d-%d poly=%d-%d",
+            query, asset_type, free_only, quality_limit, license_filter, animated_only,
+            texture_res_min, texture_res_max, file_size_min, file_size_max,
+            poly_count_min, poly_count_max
+        )
 
         vw = self._scroll.viewport().width() or self.width()
         if vw >= 32:
@@ -767,8 +821,20 @@ class AssetGrid(QWidget):
             query           = query,
             asset_type      = asset_type,
             free_only       = free_only,
+            quality_limit   = quality_limit,
+            license_filter  = license_filter,
+            animated_only   = animated_only,
             texture_res_min = texture_res_min,
             texture_res_max = texture_res_max,
+            file_size_min   = file_size_min,
+            file_size_max   = file_size_max,
+            poly_count_min  = poly_count_min,
+            poly_count_max  = poly_count_max,
+            style           = style,
+            condition       = condition,
+            design_year_min = design_year_min,
+            design_year_max = design_year_max,
+            geometry_nodes  = geometry_nodes,
             page_size       = PAGE_SIZE,
             on_results      = self._bridge.results_ready.emit,
             on_error        = self._bridge.error_occurred.emit,
@@ -961,11 +1027,48 @@ class _FiltersPanel(QWidget):
         body_l.setContentsMargins(12, 6, 12, 8)
         body_l.setSpacing(5)
 
+        # Free assets only
         self._free_only = QCheckBox("Free assets only")
         self._free_only.setChecked(prefs.search_free_only)
         self._free_only.toggled.connect(self._schedule)
         body_l.addWidget(self._free_only)
 
+        # Quality limit
+        quality_row = QHBoxLayout()
+        quality_row.setContentsMargins(0, 0, 0, 0)
+        self._quality_check = QCheckBox("Min quality")
+        self._quality_check.setChecked(prefs.search_quality_limit > 0)
+        self._quality_check.toggled.connect(self._schedule)
+        quality_row.addWidget(self._quality_check)
+        self._quality_limit = QSpinBox()
+        self._quality_limit.setRange(0, 5)
+        self._quality_limit.setValue(prefs.search_quality_limit)
+        self._quality_limit.setFixedWidth(50)
+        self._quality_limit.valueChanged.connect(self._schedule)
+        quality_row.addWidget(self._quality_limit)
+        quality_row.addStretch()
+        body_l.addLayout(quality_row)
+
+        # License filter
+        license_row = QHBoxLayout()
+        license_row.setContentsMargins(0, 0, 0, 0)
+        license_row.addWidget(QLabel("License:"))
+        self._license = QComboBox()
+        self._license.addItems(["Any", "Free", "Royalty Free", "Full", "Usage Rights"])
+        self._license.setCurrentText(prefs.search_license or "Any")
+        self._license.setFixedWidth(100)
+        self._license.currentTextChanged.connect(self._schedule)
+        license_row.addWidget(self._license)
+        license_row.addStretch()
+        body_l.addLayout(license_row)
+
+        # Animated only
+        self._animated_only = QCheckBox("Animated assets only")
+        self._animated_only.setChecked(prefs.search_animated_only)
+        self._animated_only.toggled.connect(self._schedule)
+        body_l.addWidget(self._animated_only)
+
+        # Texture resolution
         self._tex_filter = QCheckBox("Limit texture resolution")
         self._tex_filter.setChecked(prefs.search_texture_resolution)
         self._tex_filter.toggled.connect(self._schedule)
@@ -1000,6 +1103,162 @@ class _FiltersPanel(QWidget):
         self._tex_filter.toggled.connect(self._tex_min.setEnabled)
         self._tex_filter.toggled.connect(self._tex_max.setEnabled)
 
+        # Polycount filter (model-specific)
+        self._poly_filter = QCheckBox("Limit polygon count")
+        self._poly_filter.setChecked(prefs.search_poly_count)
+        self._poly_filter.toggled.connect(self._schedule)
+        body_l.addWidget(self._poly_filter)
+
+        poly_row = QHBoxLayout()
+        poly_row.setContentsMargins(20, 0, 0, 0)
+        poly_row.setSpacing(4)
+        poly_row.addWidget(QLabel("Min"))
+        self._poly_min = QSpinBox()
+        self._poly_min.setRange(0, 100000000)
+        self._poly_min.setSingleStep(10000)
+        self._poly_min.setSuffix(" K")
+        self._poly_min.setFixedWidth(80)
+        self._poly_min.setValue(prefs.search_poly_count_min // 1000)
+        self._poly_min.valueChanged.connect(self._schedule)
+        poly_row.addWidget(self._poly_min)
+        poly_row.addWidget(QLabel("Max"))
+        self._poly_max = QSpinBox()
+        self._poly_max.setRange(0, 100000000)
+        self._poly_max.setSingleStep(10000)
+        self._poly_max.setSuffix(" K")
+        self._poly_max.setFixedWidth(80)
+        self._poly_max.setValue(prefs.search_poly_count_max // 1000)
+        self._poly_max.valueChanged.connect(self._schedule)
+        poly_row.addWidget(self._poly_max)
+        poly_row.addStretch()
+        body_l.addLayout(poly_row)
+
+        self._poly_min.setEnabled(prefs.search_poly_count)
+        self._poly_max.setEnabled(prefs.search_poly_count)
+        self._poly_filter.toggled.connect(self._poly_min.setEnabled)
+        self._poly_filter.toggled.connect(self._poly_max.setEnabled)
+
+        # File size filter (MB)
+        self._fsize_filter = QCheckBox("Limit file size")
+        self._fsize_filter.setChecked(prefs.search_file_size)
+        self._fsize_filter.toggled.connect(self._schedule)
+        body_l.addWidget(self._fsize_filter)
+
+        fsize_row = QHBoxLayout()
+        fsize_row.setContentsMargins(20, 0, 0, 0)
+        fsize_row.setSpacing(4)
+        fsize_row.addWidget(QLabel("Min"))
+        self._fsize_min = QSpinBox()
+        self._fsize_min.setRange(0, 100000)
+        self._fsize_min.setSingleStep(10)
+        self._fsize_min.setSuffix(" MB")
+        self._fsize_min.setFixedWidth(80)
+        self._fsize_min.setValue(prefs.search_file_size_min)
+        self._fsize_min.valueChanged.connect(self._schedule)
+        fsize_row.addWidget(self._fsize_min)
+        fsize_row.addWidget(QLabel("Max"))
+        self._fsize_max = QSpinBox()
+        self._fsize_max.setRange(0, 100000)
+        self._fsize_max.setSingleStep(10)
+        self._fsize_max.setSuffix(" MB")
+        self._fsize_max.setFixedWidth(80)
+        self._fsize_max.setValue(prefs.search_file_size_max)
+        self._fsize_max.valueChanged.connect(self._schedule)
+        fsize_row.addWidget(self._fsize_max)
+        fsize_row.addStretch()
+        body_l.addLayout(fsize_row)
+        self._fsize_min.setEnabled(prefs.search_file_size)
+        self._fsize_max.setEnabled(prefs.search_file_size)
+        self._fsize_filter.toggled.connect(self._fsize_min.setEnabled)
+        self._fsize_filter.toggled.connect(self._fsize_max.setEnabled)
+
+        # --- Model-specific filters --------------------------------------
+        # Style
+        style_row = QHBoxLayout()
+        style_row.setContentsMargins(0, 0, 0, 0)
+        style_row.addWidget(QLabel("Style:"))
+        self._style = QComboBox()
+        self._STYLE_LABELS = [
+            ("ANY", "Any"),
+            ("REALISTIC", "Realistic"),
+            ("PAINTERLY", "Painterly"),
+            ("LOWPOLY", "Lowpoly"),
+            ("ANIME", "Anime"),
+            ("2D_VECTOR", "2D Vector"),
+            ("3D_GRAPHICS", "3D Graphics"),
+            ("OTHER", "Other"),
+        ]
+        for _api, _lbl in self._STYLE_LABELS:
+            self._style.addItem(_lbl, _api)
+        # Restore from prefs by API value
+        for i, (api_v, _) in enumerate(self._STYLE_LABELS):
+            if api_v == (prefs.search_style or "ANY"):
+                self._style.setCurrentIndex(i); break
+        self._style.setFixedWidth(110)
+        self._style.currentIndexChanged.connect(self._schedule)
+        style_row.addWidget(self._style)
+        style_row.addStretch()
+        body_l.addLayout(style_row)
+
+        # Condition
+        cond_row = QHBoxLayout()
+        cond_row.setContentsMargins(0, 0, 0, 0)
+        cond_row.addWidget(QLabel("Condition:"))
+        self._condition = QComboBox()
+        self._COND_LABELS = [
+            ("UNSPECIFIED", "Any"),
+            ("NEW",        "New"),
+            ("USED",       "Used"),
+            ("OLD",        "Old"),
+            ("DESOLATE",   "Desolate"),
+        ]
+        for _api, _lbl in self._COND_LABELS:
+            self._condition.addItem(_lbl, _api)
+        for i, (api_v, _) in enumerate(self._COND_LABELS):
+            if api_v == (prefs.search_condition or "UNSPECIFIED"):
+                self._condition.setCurrentIndex(i); break
+        self._condition.setFixedWidth(110)
+        self._condition.currentIndexChanged.connect(self._schedule)
+        cond_row.addWidget(self._condition)
+        cond_row.addStretch()
+        body_l.addLayout(cond_row)
+
+        # Design year filter
+        self._dyear_filter = QCheckBox("Limit design year")
+        self._dyear_filter.setChecked(prefs.search_design_year)
+        self._dyear_filter.toggled.connect(self._schedule)
+        body_l.addWidget(self._dyear_filter)
+
+        dyear_row = QHBoxLayout()
+        dyear_row.setContentsMargins(20, 0, 0, 0)
+        dyear_row.setSpacing(4)
+        dyear_row.addWidget(QLabel("Min"))
+        self._dyear_min = QSpinBox()
+        self._dyear_min.setRange(1900, 2100)
+        self._dyear_min.setFixedWidth(75)
+        self._dyear_min.setValue(prefs.search_design_year_min)
+        self._dyear_min.valueChanged.connect(self._schedule)
+        dyear_row.addWidget(self._dyear_min)
+        dyear_row.addWidget(QLabel("Max"))
+        self._dyear_max = QSpinBox()
+        self._dyear_max.setRange(1900, 2100)
+        self._dyear_max.setFixedWidth(75)
+        self._dyear_max.setValue(prefs.search_design_year_max)
+        self._dyear_max.valueChanged.connect(self._schedule)
+        dyear_row.addWidget(self._dyear_max)
+        dyear_row.addStretch()
+        body_l.addLayout(dyear_row)
+        self._dyear_min.setEnabled(prefs.search_design_year)
+        self._dyear_max.setEnabled(prefs.search_design_year)
+        self._dyear_filter.toggled.connect(self._dyear_min.setEnabled)
+        self._dyear_filter.toggled.connect(self._dyear_max.setEnabled)
+
+        # Geometry nodes
+        self._geo_nodes = QCheckBox("Uses Geometry Nodes")
+        self._geo_nodes.setChecked(prefs.search_geometry_nodes)
+        self._geo_nodes.toggled.connect(self._schedule)
+        body_l.addWidget(self._geo_nodes)
+
         root.addWidget(self._body)
         self._body.setVisible(False)
 
@@ -1009,14 +1268,65 @@ class _FiltersPanel(QWidget):
 
     def _schedule(self) -> None:
         prefs.search_free_only              = self._free_only.isChecked()
+        prefs.search_quality_limit          = self._quality_limit.value() if self._quality_check.isChecked() else 0
+        prefs.search_license                = self._license_to_api(self._license.currentText())
+        prefs.search_animated_only          = self._animated_only.isChecked()
         prefs.search_texture_resolution     = self._tex_filter.isChecked()
         prefs.search_texture_resolution_min = self._tex_min.value()
         prefs.search_texture_resolution_max = self._tex_max.value()
+        prefs.search_poly_count             = self._poly_filter.isChecked()
+        prefs.search_poly_count_min         = self._poly_min.value() * 1000
+        prefs.search_poly_count_max         = self._poly_max.value() * 1000
+        prefs.search_file_size              = self._fsize_filter.isChecked()
+        prefs.search_file_size_min          = self._fsize_min.value()
+        prefs.search_file_size_max          = self._fsize_max.value()
+        prefs.search_style                  = self._style.currentData() or "ANY"
+        prefs.search_condition              = self._condition.currentData() or "UNSPECIFIED"
+        prefs.search_design_year            = self._dyear_filter.isChecked()
+        prefs.search_design_year_min        = self._dyear_min.value()
+        prefs.search_design_year_max        = self._dyear_max.value()
+        prefs.search_geometry_nodes         = self._geo_nodes.isChecked()
         self._debounce.start()
+
+    @staticmethod
+    def _license_to_api(label: str) -> str:
+        """Convert UI license label to API value."""
+        mapping = {
+            "Any": "ANY",
+            "Free": "FREE",
+            "Royalty Free": "ROYALTY_FREE",
+            "Full": "FULL",
+            "Usage Rights": "USAGE_RIGHTS",
+        }
+        return mapping.get(label, "ANY")
+
+    @staticmethod
+    def _api_to_license(api_val: str) -> str:
+        """Convert API license value to UI label."""
+        mapping = {
+            "ANY": "Any",
+            "FREE": "Free",
+            "ROYALTY_FREE": "Royalty Free",
+            "FULL": "Full",
+            "USAGE_RIGHTS": "Usage Rights",
+        }
+        return mapping.get(api_val, "Any")
 
     @property
     def free_only(self) -> bool:
         return self._free_only.isChecked()
+
+    @property
+    def quality_limit(self) -> int:
+        return self._quality_limit.value() if self._quality_check.isChecked() else 0
+
+    @property
+    def license_filter(self) -> str:
+        return self._license_to_api(self._license.currentText())
+
+    @property
+    def animated_only(self) -> bool:
+        return self._animated_only.isChecked()
 
     @property
     def tex_res_enabled(self) -> bool:
@@ -1029,6 +1339,42 @@ class _FiltersPanel(QWidget):
     @property
     def tex_res_max(self) -> int:
         return self._tex_max.value() if self.tex_res_enabled else 0
+
+    @property
+    def poly_count_min(self) -> int:
+        return self._poly_min.value() * 1000 if self._poly_filter.isChecked() else 0
+
+    @property
+    def poly_count_max(self) -> int:
+        return self._poly_max.value() * 1000 if self._poly_filter.isChecked() else 0
+
+    @property
+    def file_size_min(self) -> int:
+        return self._fsize_min.value() if self._fsize_filter.isChecked() else 0
+
+    @property
+    def file_size_max(self) -> int:
+        return self._fsize_max.value() if self._fsize_filter.isChecked() else 0
+
+    @property
+    def model_style(self) -> str:
+        return self._style.currentData() or "ANY"
+
+    @property
+    def condition(self) -> str:
+        return self._condition.currentData() or "UNSPECIFIED"
+
+    @property
+    def design_year_min(self) -> int:
+        return self._dyear_min.value() if self._dyear_filter.isChecked() else 0
+
+    @property
+    def design_year_max(self) -> int:
+        return self._dyear_max.value() if self._dyear_filter.isChecked() else 0
+
+    @property
+    def geometry_nodes(self) -> bool:
+        return self._geo_nodes.isChecked()
 
 
 # ---------------------------------------------------------------------------
@@ -1113,8 +1459,20 @@ class AssetBarWidget(QWidget):
         self._grid.start_search(
             query, asset_type,
             free_only       = self._filters.free_only,
+            quality_limit   = self._filters.quality_limit,
+            license_filter  = self._filters.license_filter,
+            animated_only   = self._filters.animated_only,
             texture_res_min = self._filters.tex_res_min,
             texture_res_max = self._filters.tex_res_max,
+            file_size_min   = self._filters.file_size_min,
+            file_size_max   = self._filters.file_size_max,
+            poly_count_min  = self._filters.poly_count_min,
+            poly_count_max  = self._filters.poly_count_max,
+            style           = self._filters.model_style,
+            condition       = self._filters.condition,
+            design_year_min = self._filters.design_year_min,
+            design_year_max = self._filters.design_year_max,
+            geometry_nodes  = self._filters.geometry_nodes,
         )
 
     def _on_filters_changed(self) -> None:
@@ -1122,8 +1480,20 @@ class AssetBarWidget(QWidget):
             self._search_bar.current_query,
             self._search_bar.current_asset_type,
             free_only       = self._filters.free_only,
+            quality_limit   = self._filters.quality_limit,
+            license_filter  = self._filters.license_filter,
+            animated_only   = self._filters.animated_only,
             texture_res_min = self._filters.tex_res_min,
             texture_res_max = self._filters.tex_res_max,
+            file_size_min   = self._filters.file_size_min,
+            file_size_max   = self._filters.file_size_max,
+            poly_count_min  = self._filters.poly_count_min,
+            poly_count_max  = self._filters.poly_count_max,
+            style           = self._filters.model_style,
+            condition       = self._filters.condition,
+            design_year_min = self._filters.design_year_min,
+            design_year_max = self._filters.design_year_max,
+            geometry_nodes  = self._filters.geometry_nodes,
         )
 
     def _default_search(self) -> None:
@@ -1131,8 +1501,20 @@ class AssetBarWidget(QWidget):
             "",
             self._search_bar.current_asset_type,
             free_only       = self._filters.free_only,
+            quality_limit   = self._filters.quality_limit,
+            license_filter  = self._filters.license_filter,
+            animated_only   = self._filters.animated_only,
             texture_res_min = self._filters.tex_res_min,
             texture_res_max = self._filters.tex_res_max,
+            file_size_min   = self._filters.file_size_min,
+            file_size_max   = self._filters.file_size_max,
+            poly_count_min  = self._filters.poly_count_min,
+            poly_count_max  = self._filters.poly_count_max,
+            style           = self._filters.model_style,
+            condition       = self._filters.condition,
+            design_year_min = self._filters.design_year_min,
+            design_year_max = self._filters.design_year_max,
+            geometry_nodes  = self._filters.geometry_nodes,
         )
 
 

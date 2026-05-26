@@ -158,6 +158,18 @@ def search(
     if asset_type not in ASSET_TYPES:
         raise ValueError(f"asset_type must be one of {ASSET_TYPES}")
 
+    # --- Pull "free only" out of extra_params (it's an ordering hint, not a
+    # hard filter, in Blender): prepend "-is_free" to the order list. ---------
+    free_first = False
+    filter_params: dict[str, Any] = {}
+    if extra_params:
+        for k, v in extra_params.items():
+            if k == "is_free":
+                # Truthy → free assets first in ordering
+                free_first = bool(v) and str(v).lower() not in ("false", "0", "")
+            else:
+                filter_params[k] = v
+
     # --- Determine effective sort order (mirrors Blender's decide_ordering) ---
     if order:
         effective_order = order
@@ -168,8 +180,12 @@ def search(
         # Keyword search: full-text relevance
         effective_order = "_score"
 
+    if free_first:
+        effective_order = "-is_free," + effective_order
+
     # --- Build the query string in BlenderKit's embedded format --------------
     # Format: [user_keywords +]asset_type:X +sexualizedContent: +order:Y
+    #         +filter_key:filter_value (one per extra param, matching Blender)
     # The leading '+' before each token is a literal '+' in the URL (= space
     # when decoded), which the server uses as a token separator.
     q_tokens: list[str] = []
@@ -178,6 +194,10 @@ def search(
     q_tokens.append(f"asset_type:{asset_type}")
     q_tokens.append("sexualizedContent:")   # empty value → exclude NSFW
     q_tokens.append(f"order:{effective_order}")
+
+    # Embed remaining filter params inside the query token (Blender-style).
+    for k, v in filter_params.items():
+        q_tokens.append(f"{k}:{urllib.parse.quote_plus(str(v))}")
 
     # Join with '+' separator; add a leading '+' when there are no keywords
     # so the first token also has the expected leading separator.
@@ -190,9 +210,8 @@ def search(
         "dict_parameters": 1,
         "page_size": page_size,
         "addon_version": "0.1.0",
+        "addon_type": "maya",
     }
-    if extra_params:
-        other.update(extra_params)
 
     url = f"{SEARCH_URL}?query={query_str}&{urllib.parse.urlencode(other)}"
     return _request("GET", url, api_key=api_key)
