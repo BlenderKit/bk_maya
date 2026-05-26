@@ -1708,14 +1708,7 @@ def open_asset_bar() -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    # ``closeCommand`` fires when the user clicks the workspaceControl's X
-    # button.  We immediately re-show the panel so the bar can't be closed
-    # accidentally — the BlenderKit menu is the only way to dismiss it.
-    close_cmd = (
-        "import bk_maya.ui.asset_bar as _ab; "
-        "_ab._reopen_on_close()"
-    )
-
+    # Allow the panel to be closed via the X button or panel close.
     kw: dict = dict(
         label        = "BlenderKit",
         uiScript     = (
@@ -1724,7 +1717,7 @@ def open_asset_bar() -> None:
         ),
         initialWidth = 340,
         retain       = True,
-        closeCommand = close_cmd,
+        # No closeCommand: allow normal close
     )
 
     try:
@@ -1760,21 +1753,8 @@ def notify_error(message: str) -> None:
 
 
 def _reopen_on_close() -> None:
-    """Re-show the asset bar after Maya tries to close it via the X button.
-
-    Wired up as the ``closeCommand`` of the workspaceControl so that the
-    panel cannot be dismissed accidentally.  The BlenderKit main-menu entry
-    is the only intentional way to close/reopen the bar.
-    """
-    try:
-        if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
-            cmds.evalDeferred(
-                lambda: cmds.workspaceControl(
-                    CONTROL_NAME, edit=True, restore=True, visible=True,
-                )
-            )
-    except Exception as exc:  # noqa: BLE001
-        log.debug("_reopen_on_close failed: %s", exc)
+    # No longer used: panel can now be closed normally.
+    pass
 
 
 def _populate_workspace_control() -> None:

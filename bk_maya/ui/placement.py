@@ -603,9 +603,7 @@ def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
         data = payload.get("data", {})
         positions = data.get("line", {}).get("pos", [])
 
-        # Proxor stores positions in meters (Blender), and Z is up.  Convert
-        # to Maya's internal cm units AND swap Y/Z so the wireframe lines up
-        # with the bbox (which we also Y/Z-swap during start()).
+        # Proxor stores positions in meters (Blender), and Z is up. Convert to Maya's cm units and swap Y/Z.
         scale = _meters_to_internal()
         lines = []
         for i in range(0, len(positions) - 1, 2):
@@ -735,7 +733,7 @@ class DragSession(QObject):
         bbox_min = _coerce_bbox(raw_min, default_min)
         bbox_max = _coerce_bbox(raw_max, default_max)
 
-        # Maya is Y-up; BlenderKit/Blender is Z-up.  Swap Y/Z so the asset's
+        # Maya is Y-up; BlenderKit/Blender is Z-up. Swap Y/Z so the asset's
         # "up" axis points up in Maya, then re-order min/max per-axis.
         sw_min = (bbox_min[0], bbox_min[2], bbox_min[1])
         sw_max = (bbox_max[0], bbox_max[2], bbox_max[1])
@@ -1142,10 +1140,11 @@ class DragSession(QObject):
         try:
             import importlib
             bk_dl = importlib.import_module("bk_maya.core.download")
+            # inverse rotation
             bk_dl.download_asset(
                 asset,
                 location=loc,
-                rotation_y=rot_y,
+                rotation_y=-rot_y,
                 locator_name=self._locator_name or "",
             )
         except ModuleNotFoundError:

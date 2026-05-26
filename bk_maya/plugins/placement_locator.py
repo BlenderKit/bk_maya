@@ -109,9 +109,9 @@ _BBOX_EDGES = [
     (0, 4), (1, 5), (2, 6), (3, 7),
 ]
 
-# Edges from the forward-pointing arrow vertex (index 8) to the two front
-# bottom corners (0 and 1) — the small "lip" that visualises orientation.
-_ARROW_EDGES = [(0, 8), (1, 8)]
+# Edges for the orientation arrow: triangle at the front bottom edge (corners 2,3 are +Z).
+# Index 8 is the tip, 2 and 3 are the front-bottom corners.
+_ARROW_EDGES = [(2, 8), (3, 8), (2, 3)]
 
 
 def _rotate_y(pt: tuple, deg: float) -> tuple:
@@ -133,7 +133,7 @@ def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple) -> list[tuple]
     oz = (mn[2] + mx[2]) * 0.5
     arrow_x = 0.0
     arrow_y = 0.0
-    arrow_z = (mn[2] - oz) - width * 0.5     # forward on -Z
+    arrow_z = (mx[2] - oz) + width * 0.2     # forward on +Z (front face)
     local = [
         (mn[0]-ox, mn[1]-oy, mn[2]-oz), (mx[0]-ox, mn[1]-oy, mn[2]-oz),
         (mx[0]-ox, mn[1]-oy, mx[2]-oz), (mn[0]-ox, mn[1]-oy, mx[2]-oz),
