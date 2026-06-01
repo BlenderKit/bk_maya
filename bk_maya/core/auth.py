@@ -1,20 +1,19 @@
-"""OAuth2 PKCE authentication for BlenderKit Maya plugin.
+"""OAuth2 PKCE authentication for the BlenderKit Maya plugin.
 
-Implements the same PKCE flow as the Blender addon but without bpy:
-  1. ``login()``   — opens browser, starts a local callback server, exchanges
-                     code for tokens, persists them to disk.
-  2. ``logout()``  — revokes the token and clears persisted credentials.
-  3. ``get_api_key()`` — returns a valid access token (refreshing if needed).
+Mirrors the Blender addon flow: the local ``blenderkit-client`` Go process
+owns the OAuth callback on ``http://localhost:{port}/consumer/exchange/`` and
+delivers tokens back through ``/report`` as a ``login`` task. This module
+just generates the PKCE pair, hands the verifier to the client, opens the
+browser, and waits for the login task on a callback.
 
-Tokens are stored in ``~/Documents/maya/blenderkit_auth.json`` (Windows),
-respecting OneDrive folder redirection.
+Tokens are persisted to ``~/Documents/maya/blenderkit_auth.json`` so they
+survive Maya restarts.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import http.server
 import json
 import logging
 import os
@@ -24,16 +23,19 @@ import string
 import sys
 import threading
 import time
-import urllib.parse
 import webbrowser
 from typing import Any
 
 from ..api import client as api
+from . import client_lib
 
 log = logging.getLogger(__name__)
 
+# How early before expiry to start considering a token stale (seconds).
+_REFRESH_RESERVE = 3 * 24 * 3600  # 3 days, mirrors Blender addon
+
 # -------------------------------------------------------------------------
-# Token storage path (mirrors maya_module.py's OneDrive-aware Documents dir)
+# Token storage
 # -------------------------------------------------------------------------
 
 def _token_file() -> str:
@@ -49,44 +51,48 @@ def _token_file() -> str:
     return os.path.join(docs, "maya", "blenderkit_auth.json")
 
 
-# In-memory token cache
 _tokens: dict[str, Any] = {}
+_tokens_lock = threading.Lock()
 
 
 def _load_tokens() -> dict[str, Any]:
     global _tokens
-    try:
-        with open(_token_file(), encoding="utf-8") as fh:
-            _tokens = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        _tokens = {}
-    return _tokens
+    with _tokens_lock:
+        if _tokens:
+            return dict(_tokens)
+        try:
+            with open(_token_file(), encoding="utf-8") as fh:
+                _tokens = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            _tokens = {}
+        return dict(_tokens)
 
 
 def _save_tokens(tokens: dict[str, Any]) -> None:
     global _tokens
-    _tokens = tokens
-    path = _token_file()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(tokens, fh, indent=2)
+    with _tokens_lock:
+        _tokens = dict(tokens)
+        path = _token_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(_tokens, fh, indent=2)
 
 
 def _clear_tokens() -> None:
     global _tokens
-    _tokens = {}
-    try:
-        os.remove(_token_file())
-    except OSError:
-        pass
+    with _tokens_lock:
+        _tokens = {}
+        try:
+            os.remove(_token_file())
+        except OSError:
+            pass
 
 
 # -------------------------------------------------------------------------
-# PKCE helpers
+# PKCE
 # -------------------------------------------------------------------------
 
 def _generate_pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge)."""
     rand = random.SystemRandom()
     verifier = "".join(rand.choices(string.ascii_letters + string.digits, k=128))
     digest = hashlib.sha256(verifier.encode()).digest()
@@ -95,65 +101,41 @@ def _generate_pkce_pair() -> tuple[str, str]:
 
 
 # -------------------------------------------------------------------------
-# Local callback server
+# Login task plumbing
 # -------------------------------------------------------------------------
 
-# Preferred ports — these are the exact ports the BlenderKit OAuth app has
-# whitelisted as valid ``redirect_uri`` hosts (mirrors
-# ``blenderkit_addon/global_vars.py::CLIENT_PORTS``).  Using any other port
-# results in "Error: invalid_request — Mismatching redirect URI." from the
-# authorisation endpoint.  Order matches the addon's default ordering.
-_CALLBACK_PORT_CANDIDATES = (62485, 65425, 55428, 49452, 35452, 25152, 5152, 1234)
+_login_event = threading.Event()
+_login_error: str = ""
 
-_auth_code_event = threading.Event()
-_received_code: str = ""
-_received_state: str = ""
+# Refresh suppression so concurrent get_api_key() calls only fire one /refresh.
+_refresh_inflight = False
+_refresh_lock = threading.Lock()
 
 
-class _CallbackHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *_) -> None:  # silence access log
-        pass
+def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
+    """Callback registered with the client for every ``login`` task."""
+    global _login_error, _refresh_inflight
+    if status == "finished" and result.get("access_token"):
+        tokens = {
+            "access_token":  result["access_token"],
+            "refresh_token": result.get("refresh_token", ""),
+            "expires_in":    result.get("expires_in", 3600),
+            "expires_at":    time.time() + int(result.get("expires_in", 3600)),
+        }
+        _save_tokens(tokens)
+        log.info("BlenderKit tokens received from client.")
+    else:
+        _login_error = message or "Login failed"
+        log.error("Login task failed: %s", _login_error)
 
-    def do_GET(self):  # noqa: N802
-        global _received_code, _received_state
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-        _received_code = params.get("code", [""])[0]
-        _received_state = params.get("state", [""])[0]
-
-        html = (
-            b"<html><body><h2>BlenderKit login complete.</h2>"
-            b"<p>You can close this tab and return to Maya.</p></body></html>"
-        )
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(html)))
-        self.end_headers()
-        self.wfile.write(html)
-        _auth_code_event.set()
+    with _refresh_lock:
+        _refresh_inflight = False
+    _login_event.set()
 
 
-def _start_callback_server() -> tuple[http.server.HTTPServer, int]:
-    """Bind the callback server to the first port that works.
-
-    Returns ``(server, port)``.  Raises ``OSError`` if every candidate fails.
-    """
-    last_err: OSError | None = None
-    for port in _CALLBACK_PORT_CANDIDATES:
-        try:
-            server = http.server.HTTPServer(("localhost", port), _CallbackHandler)
-        except OSError as exc:
-            log.debug("OAuth callback port %s unavailable: %s", port, exc)
-            last_err = exc
-            continue
-        bound_port = server.server_address[1]
-        thread = threading.Thread(target=server.handle_request, daemon=True)
-        thread.start()
-        log.info("OAuth callback server bound on port %s", bound_port)
-        return server, bound_port
-    raise OSError(
-        f"Could not bind OAuth callback server on any of {_CALLBACK_PORT_CANDIDATES}: {last_err}"
-    )
+# Register the login callback once on import so refreshes happening before
+# any explicit login() call are still persisted.
+client_lib.set_login_callback(_on_login_task)
 
 
 # -------------------------------------------------------------------------
@@ -161,111 +143,99 @@ def _start_callback_server() -> tuple[http.server.HTTPServer, int]:
 # -------------------------------------------------------------------------
 
 def is_logged_in() -> bool:
-    """Return True if we have a stored access token."""
-    tokens = _tokens or _load_tokens()
-    return bool(tokens.get("access_token"))
+    return bool(_load_tokens().get("access_token"))
 
 
 def get_api_key() -> str:
-    """Return a valid access token, refreshing silently if near expiry."""
-    tokens = _tokens or _load_tokens()
-    if not tokens:
+    """Return the cached access token. Triggers a background refresh if the
+    token is within ``_REFRESH_RESERVE`` seconds of expiry, but never blocks.
+    """
+    tokens = _load_tokens()
+    access  = tokens.get("access_token",  "")
+    refresh = tokens.get("refresh_token", "")
+    if not access:
         return ""
 
-    expires_at = tokens.get("expires_at", 0)
-    # Refresh if token expires within 1 hour
-    if time.time() > expires_at - 3600:
-        refresh = tokens.get("refresh_token", "")
-        if not refresh:
-            return ""
-        try:
-            new_tokens = api.refresh_tokens(refresh)
-            new_tokens["expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
-            _save_tokens(new_tokens)
-            return new_tokens.get("access_token", "")
-        except Exception as exc:
-            log.warning("Token refresh failed: %s", exc)
-            return ""
+    expires_at = float(tokens.get("expires_at", 0))
+    if refresh and time.time() + _REFRESH_RESERVE >= expires_at:
+        _request_refresh(refresh, access)
 
-    return tokens.get("access_token", "")
+    return access
 
 
-def login(timeout: float = 120.0) -> bool:
-    """Open the browser OAuth flow.  Blocks until the callback is received
-    or *timeout* seconds pass.  Returns True on success.
+def _request_refresh(refresh: str, old_api_key: str) -> None:
+    """Fire-and-forget refresh via the client (deduped)."""
+    global _refresh_inflight
+    with _refresh_lock:
+        if _refresh_inflight:
+            return
+        _refresh_inflight = True
+    try:
+        client_lib.ensure_running()
+        client_lib.refresh_token(refresh, old_api_key)
+        log.info("Token refresh requested via client.")
+    except Exception as exc:
+        with _refresh_lock:
+            _refresh_inflight = False
+        log.warning("Token refresh request failed: %s", exc)
+
+
+def login(timeout: float = 180.0) -> bool:
+    """Open the browser OAuth flow. Blocks until the client reports a login
+    task or *timeout* elapses. Returns True on success.
     """
-    global _received_code, _received_state, _auth_code_event
+    global _login_error
 
-    _auth_code_event = threading.Event()
-    _received_code = ""
-    _received_state = ""
+    client_lib.ensure_running()
+    port = client_lib._active_port  # noqa: SLF001
+    if not port:
+        log.error("Client not running; cannot start login.")
+        return False
 
-    code_verifier, code_challenge = _generate_pkce_pair()
+    verifier, challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(16)
 
     try:
-        server, port = _start_callback_server()
-    except OSError as exc:
-        msg = (
-            f"Could not bind the OAuth callback server on any of the BlenderKit "
-            f"whitelisted ports {_CALLBACK_PORT_CANDIDATES}. "
-            f"They may be blocked by Windows excluded port ranges, Hyper-V, or "
-            f"another running process. "
-            f"Workaround: open Settings → Account and paste an API key from "
-            f"your blenderkit.com profile. (Last error: {exc})"
-        )
-        log.error(msg)
-        raise RuntimeError(msg) from exc
+        client_lib.send_oauth_verification_data(verifier, state)
+    except Exception as exc:
+        log.error("Failed to send PKCE verifier to client: %s", exc)
+        return False
 
     redirect_uri = f"http://localhost:{port}/consumer/exchange/"
-
     auth_url = (
-        f"{api.BASE_URL}/o/authorize/"
-        f"?client_id={api.CLIENT_ID}"
+        f"{api.BASE_URL}/o/authorize"
+        f"?client_id={client_lib.OAUTH_CLIENT_ID}"
         f"&response_type=code"
         f"&state={state}"
-        f"&code_challenge={code_challenge}"
+        f"&redirect_uri={redirect_uri}"
+        f"&code_challenge={challenge}"
         f"&code_challenge_method=S256"
-        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
     )
 
+    _login_event.clear()
+    _login_error = ""
     log.info("Opening browser for BlenderKit login (callback on port %s)…", port)
     webbrowser.open_new_tab(auth_url)
 
-    if not _auth_code_event.wait(timeout=timeout):
+    if not _login_event.wait(timeout=timeout):
         log.error("Login timed out after %s seconds.", timeout)
-        server.server_close()
         return False
 
-    server.server_close()
-
-    if not _received_code:
-        log.error("No authorisation code received.")
+    if _login_error:
         return False
-
-    if _received_state != state:
-        log.error("OAuth state mismatch — possible CSRF attack.")
-        return False
-
-    try:
-        tokens = api.exchange_code_for_tokens(
-            _received_code, code_verifier, redirect_uri
-        )
-    except Exception as exc:
-        log.error("Token exchange failed: %s", exc)
-        return False
-
-    tokens["expires_at"] = time.time() + tokens.get("expires_in", 3600)
-    _save_tokens(tokens)
-    log.info("Login successful.")
-    return True
+    return is_logged_in()
 
 
 def logout() -> None:
-    """Revoke stored token and clear credentials."""
-    tokens = _tokens or _load_tokens()
-    access = tokens.get("access_token", "")
-    if access:
-        api.revoke_token(access)
+    """Revoke tokens on the server and clear local storage."""
+    tokens = _load_tokens()
+    refresh = tokens.get("refresh_token", "")
+    access  = tokens.get("access_token", "")
+    if refresh:
+        try:
+            client_lib.ensure_running()
+            client_lib.oauth2_logout(refresh, access)
+        except Exception as exc:
+            log.warning("Client-side logout failed: %s", exc)
     _clear_tokens()
     log.info("Logged out.")

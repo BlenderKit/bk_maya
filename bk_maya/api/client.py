@@ -133,6 +133,66 @@ SEARCH_URL = f"{API_V1}/search/"
 ASSET_TYPES = ("model", "material", "scene", "hdr", "brush", "printable")
 
 
+def build_search_url(
+    query: str = "",
+    asset_type: str = "model",
+    order: str = "",
+    page_size: int = 24,
+    extra_params: dict[str, Any] | None = None,
+    next_url: str = "",
+) -> str:
+    """Return the full ``https://www.blenderkit.com/api/v1/search/?...`` URL.
+
+    When *next_url* is supplied (cursor pagination) it is returned verbatim.
+    The Go client expects this URL as the ``urlquery`` field of an
+    ``/blender/asset_search`` request and GETs it directly.
+    """
+    if next_url:
+        return next_url
+    if asset_type not in ASSET_TYPES:
+        raise ValueError(f"asset_type must be one of {ASSET_TYPES}")
+
+    free_first = False
+    filter_params: dict[str, Any] = {}
+    if extra_params:
+        for k, v in extra_params.items():
+            if k == "is_free":
+                free_first = bool(v) and str(v).lower() not in ("false", "0", "")
+            else:
+                filter_params[k] = v
+
+    if order:
+        effective_order = order
+    elif not query:
+        effective_order = "-last_blend_upload,-last_zip_file_upload"
+    else:
+        effective_order = "_score"
+
+    if free_first:
+        effective_order = "-is_free," + effective_order
+
+    q_tokens: list[str] = []
+    if query:
+        q_tokens.append(urllib.parse.quote_plus(query))
+    q_tokens.append(f"asset_type:{asset_type}")
+    q_tokens.append("sexualizedContent:")
+    q_tokens.append(f"order:{effective_order}")
+    for k, v in filter_params.items():
+        q_tokens.append(f"{k}:{urllib.parse.quote_plus(str(v))}")
+
+    query_str = "+".join(q_tokens)
+    if not query:
+        query_str = "+" + query_str
+
+    other: dict[str, Any] = {
+        "dict_parameters": 1,
+        "page_size": page_size,
+        "addon_version": "0.1.0",
+        "addon_type": "maya",
+    }
+    return f"{SEARCH_URL}?query={query_str}&{urllib.parse.urlencode(other)}"
+
+
 def search(
     query: str = "",
     asset_type: str = "model",

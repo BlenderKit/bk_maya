@@ -41,8 +41,8 @@ from qtpy.QtWidgets import (
 
 from ..core import auth, search as bk_search
 from ..core import icons as bk_icons
+from ..core import client_lib
 from ..core.prefs import prefs
-from ..api import client as api
 
 log = logging.getLogger(__name__)
 
@@ -114,25 +114,49 @@ class _SmoothScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Thumbnail loader  (background thread → Qt signal)
+# Report poller  — pulls task updates from the local blenderkit-client
 # ---------------------------------------------------------------------------
+#
+# Search results and thumbnail file paths are delivered as ``search`` and
+# ``thumbnail_download`` tasks on ``/report``.  A single QTimer per Maya
+# session drains the queue and dispatches them via ``client_lib`` to the
+# callbacks registered by ``core.search`` and ``AssetTile``.
 
-class _ThumbnailLoader(QObject):
-    loaded = Signal(str, str)   # (asset_id, local_path)
+class _ReportPoller(QObject):
+    INTERVAL_MS = 200
 
-    def load(self, asset_id: str, url: str) -> None:
-        def _run() -> None:
-            try:
-                dest = os.path.join(tempfile.gettempdir(), f"bk_thumb_{asset_id}.jpg")
-                if not os.path.exists(dest):
-                    api.download_thumbnail(url, dest)
-                self.loaded.emit(asset_id, dest)
-            except Exception as exc:
-                log.debug("Thumb load failed %s: %s", asset_id, exc)
-        threading.Thread(target=_run, daemon=True).start()
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _tick(self) -> None:
+        try:
+            tasks = client_lib.get_reports(api_key=auth.get_api_key())
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Report poll error: %s", exc)
+            return
+        if tasks:
+            client_lib.dispatch_tasks(tasks)
 
 
-_thumb_loader = _ThumbnailLoader()
+_poller: "_ReportPoller | None" = None
+
+
+def _ensure_poller() -> _ReportPoller:
+    global _poller
+    if _poller is None:
+        _poller = _ReportPoller()
+        _poller.start()
+    return _poller
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +191,11 @@ class AssetDetailDialog(QDialog):
         thumb_lbl.setStyleSheet("background: #2a2a2a; border-radius: 4px;")
 
         asset_id = asset.get("assetBaseId") or asset.get("id", "")
-        cached = os.path.join(tempfile.gettempdir(), f"bk_thumb_{asset_id}.jpg")
-        if os.path.exists(cached):
+        tempdir = bk_search.get_tempdir(asset.get("assetType") or "model")
+        thumb_url = asset.get("thumbnailSmallUrlWebp") or asset.get("thumbnailSmallUrl") or ""
+        basename = thumb_url.rsplit("/", 1)[-1].split("?", 1)[0]
+        cached = os.path.join(tempdir, basename) if basename else ""
+        if cached and os.path.exists(cached):
             pix = QPixmap(cached)
             if not pix.isNull():
                 thumb_lbl.setPixmap(
@@ -426,11 +453,18 @@ class AssetTile(QFrame):
                 self._lock_badge.show()
                 self._lock_badge.raise_()
 
-        # ── Thumbnail download ─────────────────────────────────────────────
-        url = asset.get("thumbnailSmallUrl") or asset.get("thumbnailMiddleUrl", "")
-        if url:
-            _thumb_loader.loaded.connect(self._on_loaded)
-            _thumb_loader.load(self._asset_id, url)
+        # ── Thumbnail handling ─────────────────────────────────────────────
+        # The local client downloads all thumbnails into the search tempdir
+        # and notifies us via ``thumbnail_download`` tasks.  Register here
+        # so the report poller can deliver the file path.  If the file is
+        # already on disk (cached from a prior search), pick it up now.
+        if self._asset_id:
+            tempdir = bk_search.get_tempdir(asset.get("assetType") or "model")
+            cached = self._find_cached_thumb(tempdir, asset)
+            if cached:
+                self._on_thumb_ready(cached)
+            else:
+                client_lib.thumb_registry.register(self._asset_id, self._on_thumb_ready)
 
     def resize_to(self, cell_w: int) -> None:
         """Resize for reflow without losing loaded state."""
@@ -546,11 +580,29 @@ class AssetTile(QFrame):
                 )
             )
 
-    def _on_loaded(self, asset_id: str, path: str) -> None:
-        if asset_id != self._asset_id:
+    def _on_thumb_ready(self, path: str) -> None:
+        """Called by the report poller when the client has the file ready."""
+        if not path or not os.path.exists(path):
             return
         self._thumb_path = path
         self._apply_pix(path)
+        client_lib.thumb_registry.unregister(self._asset_id)
+
+    @staticmethod
+    def _find_cached_thumb(tempdir: str, asset: dict[str, Any]) -> str:
+        """Return a previously-downloaded small thumbnail path, or ''.
+
+        The client names files after the URL's basename, so probe the most
+        likely candidates without scanning the whole directory.
+        """
+        url = asset.get("thumbnailSmallUrlWebp") or asset.get("thumbnailSmallUrl") or ""
+        if not url:
+            return ""
+        basename = url.rsplit("/", 1)[-1].split("?", 1)[0]
+        if not basename:
+            return ""
+        path = os.path.join(tempdir, basename)
+        return path if os.path.exists(path) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -851,6 +903,8 @@ class AssetGrid(QWidget):
 
     def _clear_tiles(self) -> None:
         for tile in self._tiles:
+            if tile._asset_id:
+                client_lib.thumb_registry.unregister(tile._asset_id)
             tile.hide()
             tile.deleteLater()
         self._tiles.clear()
@@ -1561,6 +1615,7 @@ class AssetBarWidget(QWidget):
         self._grid = AssetGrid()
         layout.addWidget(self._grid, stretch=1)
 
+        _ensure_poller()
         self._refresh_login_state()
         QTimer.singleShot(500, self._default_search)
 
