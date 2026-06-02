@@ -49,13 +49,14 @@ _VERSION_RE = re.compile(r"Blender\s+(\d+)\.(\d+)(?:\.(\d+))?", re.IGNORECASE)
 # Auto-detection
 # ---------------------------------------------------------------------------
 
+
 def _candidate_paths() -> list[str]:
     """Return platform-specific candidate paths, newest-version first."""
     out: list[str] = []
     if sys.platform == "win32":
         for root in (
-            os.environ.get("ProgramFiles", r"C:\Program Files"),
-            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
         ):
             base = Path(root) / "Blender Foundation"
             if base.is_dir():
@@ -66,14 +67,22 @@ def _candidate_paths() -> list[str]:
                 )
                 out.extend(str(v / "blender.exe") for v in versions)
     elif sys.platform == "darwin":
-        out.extend([
-            "/Applications/Blender.app/Contents/MacOS/Blender",
-            os.path.expanduser("~/Applications/Blender.app/Contents/MacOS/Blender"),
-        ])
+        out.extend(
+            [
+                "/Applications/Blender.app/Contents/MacOS/Blender",
+                os.path.expanduser("~/Applications/Blender.app/Contents/MacOS/Blender"),
+            ]
+        )
     else:  # Linux / other
-        for d in ("/usr/bin", "/usr/local/bin", "/opt/blender/blender",
-                  os.path.expanduser("~/blender/blender")):
-            out.append(d if d.endswith("blender") else os.path.join(d, "blender"))
+        out.extend(
+            d if d.endswith("blender") else os.path.join(d, "blender")
+            for d in (
+                "/usr/bin",
+                "/usr/local/bin",
+                "/opt/blender/blender",
+                os.path.expanduser("~/blender/blender"),
+            )
+        )
     return out
 
 
@@ -111,7 +120,10 @@ def query_blender_version(exe_path: str, *, timeout: float = 5.0) -> tuple[int, 
     try:
         proc = subprocess.run(
             [exe_path, "--version"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         first_line = (proc.stdout or "").splitlines()[0] if proc.stdout else ""
@@ -131,6 +143,7 @@ def version_meets_min(version: tuple[int, int, int] | None) -> bool:
 # Background job
 # ---------------------------------------------------------------------------
 
+
 class BlenderJob(QObject):
     """Spawn Blender headless and stream parsed progress signals.
 
@@ -148,11 +161,11 @@ class BlenderJob(QObject):
         Raw stdout/stderr line (useful for the developer console).
     """
 
-    progress  = Signal(float, str)
-    status    = Signal(str)
-    finished  = Signal(str)
-    failed    = Signal(str)
-    log_line  = Signal(str)
+    progress = Signal(float, str)
+    status = Signal(str)
+    finished = Signal(str)
+    failed = Signal(str)
+    log_line = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -162,8 +175,7 @@ class BlenderJob(QObject):
         self._error_emitted = False
 
     # ------------------------------------------------------------------
-    def start(self, script_path: str, script_args: list[str], *,
-              blender_exe: str = "") -> bool:
+    def start(self, script_path: str, script_args: list[str], *, blender_exe: str = "") -> bool:
         """Launch Blender.  Returns True on successful start.
 
         On failure the :pyattr:`failed` signal is emitted synchronously.
@@ -171,16 +183,14 @@ class BlenderJob(QObject):
         exe = blender_exe or find_blender_executable()
         if not exe:
             self.failed.emit(
-                "Blender executable not found. Set the path in BlenderKit → "
-                "Settings → Files → Blender Executable."
+                "Blender executable not found. Set the path in BlenderKit → Settings → Files → Blender Executable."
             )
             return False
         if not os.path.isfile(script_path):
             self.failed.emit(f"Background script missing: {script_path}")
             return False
 
-        argv = ["--background", "--factory-startup",
-                "--python", script_path, "--", *script_args]
+        argv = ["--background", "--factory-startup", "--python", script_path, "--", *script_args]
 
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.MergedChannels)
@@ -238,12 +248,12 @@ class BlenderJob(QObject):
             msg = parts[2] if len(parts) > 2 else ""
             self.progress.emit(frac, msg)
         elif line.startswith("BK_STATUS "):
-            self.status.emit(line[len("BK_STATUS "):].strip())
+            self.status.emit(line[len("BK_STATUS ") :].strip())
         elif line.startswith("BK_DONE "):
-            self._last_output_path = line[len("BK_DONE "):].strip()
+            self._last_output_path = line[len("BK_DONE ") :].strip()
         elif line.startswith("BK_ERROR "):
             self._error_emitted = True
-            self.failed.emit(line[len("BK_ERROR "):].strip())
+            self.failed.emit(line[len("BK_ERROR ") :].strip())
 
     # ------------------------------------------------------------------
     def _on_error(self, err) -> None:  # QProcess.ProcessError

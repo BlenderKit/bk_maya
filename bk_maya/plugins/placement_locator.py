@@ -1,23 +1,25 @@
-"""BlenderKit placement locator – Maya viewport draw override.
+"""BlenderKit placement locator - Maya viewport draw override.
 
 A custom `MPxLocatorNode` whose `MPxDrawOverride` renders the drag-to-place
 visualisation directly with `MUIDrawManager`.
 
 Visual elements
 ===============
-*  Bounding-box edges (12 lines) – green when valid (geometry hit), cyan when
+*  Bounding-box edges (12 lines) - green when valid (geometry hit), cyan when
    falling back to the Y=0 floor, red when no surface.
-*  Optional proxor wireframe – yellow line segments transformed by location +
+*  Optional proxor wireframe - yellow line segments transformed by location +
    Y-rotation.
 *  Screen-space hint text in the bottom centre (Wheel: rotate, etc.).
 
 The locator is a *transient* node: created lazily when the drag session starts
-and deleted on completion / cancellation.  It carries no data of its own –
+and deleted on completion / cancellation.  It carries no data of its own -
 :func:`bk_maya.ui.placement.get_drag_snapshot` is queried each draw cycle.
 """
+
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 
@@ -54,12 +56,13 @@ def _resolve_plugin_dir() -> str:
             return os.path.dirname(cand)
     return ""
 
-_here = _resolve_plugin_dir()                                # …/bk_maya/plugins
+
+_here = _resolve_plugin_dir()  # …/bk_maya/plugins
 _bk_root = os.path.dirname(os.path.dirname(_here)) if _here else ""  # repo root
 if _bk_root and _bk_root not in sys.path:
     sys.path.insert(0, _bk_root)
 
-from bk_maya.core import locator_state as _state  # noqa: E402
+from bk_maya.core import locator_state as _state
 
 
 def set_proxor_lines(node_name: str, lines: list) -> None:
@@ -75,8 +78,23 @@ def clear_proxor_lines(node_name: str) -> None:
     _state.clear_proxor_lines(node_name)
 
 
-def set_label(node_name: str, name: str | None = None,
-              status: str | None = None) -> None:
+def set_proxor_mesh(node_name: str, verts: list) -> None:
+    """Register a flat list of triangle vertices for *node_name*.
+
+    *verts* must already be in Maya local space (axis-swapped, scaled).
+    Pass ``[]`` to clear.
+    """
+    if verts:
+        _state.set_proxor_mesh(node_name, verts)
+    else:
+        _state.clear_proxor_mesh(node_name)
+
+
+def clear_proxor_mesh(node_name: str) -> None:
+    _state.clear_proxor_mesh(node_name)
+
+
+def set_label(node_name: str, name: str | None = None, status: str | None = None) -> None:
     """Update the on-screen labels for *node_name*."""
     _state.set_label(node_name, name=name, status=status)
 
@@ -90,12 +108,12 @@ def clear_label(node_name: str) -> None:
 # Maya registration constants
 # ---------------------------------------------------------------------------
 
-NODE_NAME           = "bkPlacementLocator"
+NODE_NAME = "bkPlacementLocator"
 # Arbitrary node-id in the "developer-experimental" range (0x00120000-0x0012FFFF
 # is normally safe; use 0x0013FA60 to avoid collisions).
-NODE_ID             = om2.MTypeId(0x0013FA60)
+NODE_ID = om2.MTypeId(0x0013FA60)
 DRAW_CLASSIFICATION = "drawdb/geometry/bkPlacementLocator"
-DRAW_REGISTRANT_ID  = "BkPlacementLocatorPlugin"
+DRAW_REGISTRANT_ID = "BkPlacementLocatorPlugin"
 
 
 def maya_useNewAPI() -> None:
@@ -106,12 +124,19 @@ def maya_useNewAPI() -> None:
 # Bounding-box helpers (duplicated here so the locator has no UI dependency)
 # ---------------------------------------------------------------------------
 
-import math
-
 _BBOX_EDGES = [
-    (0, 1), (1, 2), (2, 3), (3, 0),
-    (4, 5), (5, 6), (6, 7), (7, 4),
-    (0, 4), (1, 5), (2, 6), (3, 7),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
 ]
 
 # Edges for the orientation arrow: triangle at the front bottom edge (corners 2,3 are +Z).
@@ -151,12 +176,12 @@ def _align_y_to_normal(pt: tuple, normal: tuple) -> tuple:
     # Rodrigues with k=(ax,0,az):
     #   p' = p*cos + (k×p)*sin + k*(k·p)*(1-cos)
     one_minus_c = 1.0 - cos_t
-    cx = -az * y                       # (k × p).x
-    cy = az * x - ax * z               # (k × p).y
-    cz = ax * y                        # (k × p).z
-    kdp = ax * x + az * z              # k · p
+    cx = -az * y  # (k × p).x
+    cy = az * x - ax * z  # (k × p).y
+    cz = ax * y  # (k × p).z
+    kdp = ax * x + az * z  # k · p
     rx = x * cos_t + cx * sin_t + ax * kdp * one_minus_c
-    ry = y * cos_t + cy * sin_t                                # k.y = 0
+    ry = y * cos_t + cy * sin_t  # k.y = 0
     rz = z * cos_t + cz * sin_t + az * kdp * one_minus_c
     return (rx, ry, rz)
 
@@ -168,8 +193,98 @@ def _local_to_world(pt: tuple, loc: tuple, rot_y: float, normal: tuple) -> tuple
     return (loc[0] + oriented[0], loc[1] + oriented[1], loc[2] + oriented[2])
 
 
-def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple,
-                  normal: tuple = (0.0, 1.0, 0.0)) -> list[tuple]:
+# --- Proxor hologram-mesh draw ---------------------------------------------
+# Mirrors the Blender addon's draw_proxor_download() look (mesh + vertical
+# alpha gradient + progress reveal sweep), minus the glowing back-face outline.
+#
+# The PRX mesh section stores triangle vertices consecutively (3 verts per
+# triangle, no index buffer).  We:
+#  * transform each vert to world space (rotate around local-Y, align to
+#    the surface normal, translate to *loc*);
+#  * compute a per-vertex RGBA where alpha = hologram-gradient * reveal-band
+#    using the vertex's *local-Y* (height above the ground), matching
+#    bl_proxor.draw._apply_vertical_gradient();
+#  * cull whole triangles fully above the reveal band so we don't pay for
+#    invisible geometry.
+_PROXOR_HOLO_RGB = (0.0, 1.0, 0.0)  # green - matches addon's draw_proxor_download default
+_PROXOR_IDLE_RGB = (0.0, 1.0, 0.0)
+_PROXOR_GRAD_LOW = 0.35
+_PROXOR_GRAD_HIGH = 1.00
+_PROXOR_BAND_WIDTH = 0.10
+_PROXOR_ALPHA_TOP = 0.45
+
+
+def _draw_proxor_mesh(
+    drawManager,
+    verts_local: list,
+    loc: tuple,
+    rot_y: float,
+    normal: tuple,
+    y_min: float,
+    y_max: float,
+    vis_pct_float: float,
+    downloading: bool,
+) -> None:
+    """Draw the proxor mesh as translucent triangles with reveal sweep.
+
+    *verts_local* is a flat list of ``(x, y, z)`` tuples, 3 consecutive
+    verts = 1 triangle, in the locator's local space (Maya internal units).
+    """
+    n = len(verts_local) // 3
+    if n <= 0:
+        return
+
+    y_range = max(1e-6, y_max - y_min)
+    half_band = _PROXOR_BAND_WIDTH * 0.5
+    # smoothstep band centre sweeps from below mesh (vis=0) to above (vis=1)
+    band_centre = -half_band + vis_pct_float * (1.0 + _PROXOR_BAND_WIDTH)
+    band_low = band_centre - half_band
+    band_high = band_centre + half_band
+    band_span = max(band_high - band_low, 1e-8)
+
+    r, g, b = _PROXOR_HOLO_RGB if downloading else _PROXOR_IDLE_RGB
+
+    pos_array = om2.MPointArray()
+    col_array = om2.MColorArray()
+
+    for tri in range(n):
+        i0 = tri * 3
+        v0 = verts_local[i0]
+        v1 = verts_local[i0 + 1]
+        v2 = verts_local[i0 + 2]
+        # Quick triangle cull: if all 3 verts are above the reveal band,
+        # the whole triangle is invisible -> skip.
+        t0 = (v0[1] - y_min) / y_range
+        t1 = (v1[1] - y_min) / y_range
+        t2 = (v2[1] - y_min) / y_range
+        if min(t0, t1, t2) >= band_high:
+            continue
+
+        for vert, t in ((v0, t0), (v1, t1), (v2, t2)):
+            wx, wy, wz = _local_to_world(vert, loc, rot_y, normal)
+            pos_array.append(om2.MPoint(wx, wy, wz))
+            t_c = max(0.0, min(1.0, t))
+            v_mult = _PROXOR_GRAD_LOW + (_PROXOR_GRAD_HIGH - _PROXOR_GRAD_LOW) * t_c
+            hologram_a = 1.0 + (_PROXOR_ALPHA_TOP - 1.0) * t_c
+            s = max(0.0, min(1.0, (t_c - band_low) / band_span))
+            reveal_a = 1.0 - (s * s * (3.0 - 2.0 * s))  # smoothstep
+            a = hologram_a * reveal_a
+            col_array.append(om2.MColor((r * v_mult, g * v_mult, b * v_mult, a)))
+
+    if len(pos_array) == 0:
+        return
+
+    try:
+        drawManager.mesh(omr2.MUIDrawManager.kTriangles, pos_array, None, col_array)
+    except Exception as exc:
+        # Older MUIDrawManager bindings may use kTris instead of kTriangles
+        try:
+            drawManager.mesh(omr2.MUIDrawManager.kTris, pos_array, None, col_array)
+        except Exception:
+            log.debug("proxor mesh draw failed: %s", exc)
+
+
+def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple, normal: tuple = (0.0, 1.0, 0.0)) -> list[tuple]:
     # Local-space corners of the bbox plus an arrow tip vertex (index 8)
     # that projects forward on -Z from the bottom-front edge centre — small
     # "lip" matching the Blender add-on's draw_bbox() implementation.
@@ -181,20 +296,25 @@ def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple,
     oz = (mn[2] + mx[2]) * 0.5
     arrow_x = 0.0
     arrow_y = 0.0
-    arrow_z = (mx[2] - oz) + width * 0.2     # forward on +Z (front face)
+    arrow_z = (mx[2] - oz) + width * 0.2  # forward on +Z (front face)
     local = [
-        (mn[0]-ox, mn[1]-oy, mn[2]-oz), (mx[0]-ox, mn[1]-oy, mn[2]-oz),
-        (mx[0]-ox, mn[1]-oy, mx[2]-oz), (mn[0]-ox, mn[1]-oy, mx[2]-oz),
-        (mn[0]-ox, mx[1]-oy, mn[2]-oz), (mx[0]-ox, mx[1]-oy, mn[2]-oz),
-        (mx[0]-ox, mx[1]-oy, mx[2]-oz), (mn[0]-ox, mx[1]-oy, mx[2]-oz),
-        (arrow_x,  arrow_y,  arrow_z),
+        (mn[0] - ox, mn[1] - oy, mn[2] - oz),
+        (mx[0] - ox, mn[1] - oy, mn[2] - oz),
+        (mx[0] - ox, mn[1] - oy, mx[2] - oz),
+        (mn[0] - ox, mn[1] - oy, mx[2] - oz),
+        (mn[0] - ox, mx[1] - oy, mn[2] - oz),
+        (mx[0] - ox, mx[1] - oy, mn[2] - oz),
+        (mx[0] - ox, mx[1] - oy, mx[2] - oz),
+        (mn[0] - ox, mx[1] - oy, mx[2] - oz),
+        (arrow_x, arrow_y, arrow_z),
     ]
     return [_local_to_world(p, loc, rot_y, normal) for p in local]
 
 
 # ---------------------------------------------------------------------------
-# Locator node – does nothing on its own; the draw override does all the work
+# Locator node - does nothing on its own; the draw override does all the work
 # ---------------------------------------------------------------------------
+
 
 class BkPlacementLocator(omui2.MPxLocatorNode):
     # --- Attribute handles ---
@@ -259,7 +379,7 @@ class BkPlacementLocator(omui2.MPxLocatorNode):
         eAttr.writable = True
         BkPlacementLocator.addAttribute(BkPlacementLocator.download_state_attr)
 
-        # bbox in Maya internal units (cm) – authored once at drag start.
+        # bbox in Maya internal units (cm) - authored once at drag start.
         BkPlacementLocator.bbox_min_attr = nAttr.createPoint("bboxMin", "bbMin")
         nAttr.storable = True
         nAttr.keyable = True
@@ -292,6 +412,7 @@ class BkPlacementLocator(omui2.MPxLocatorNode):
 # Per-draw user data
 # ---------------------------------------------------------------------------
 
+
 class _BkUserData(om2.MUserData):
     """Snapshot of the placement state captured during prepareForDraw().
 
@@ -306,8 +427,9 @@ class _BkUserData(om2.MUserData):
 
 
 # ---------------------------------------------------------------------------
-# Draw override – renders the bbox / proxor / hint
+# Draw override - renders the bbox / proxor / hint
 # ---------------------------------------------------------------------------
+
 
 class BkPlacementDrawOverride(omr2.MPxDrawOverride):
     @staticmethod
@@ -321,11 +443,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
     # ── Capabilities ──────────────────────────────────────────────────────
 
     def supportedDrawAPIs(self):
-        return (
-            omr2.MRenderer.kOpenGL
-            | omr2.MRenderer.kDirectX11
-            | omr2.MRenderer.kOpenGLCoreProfile
-        )
+        return omr2.MRenderer.kOpenGL | omr2.MRenderer.kDirectX11 | omr2.MRenderer.kOpenGLCoreProfile
 
     def hasUIDrawables(self) -> bool:
         return True
@@ -337,7 +455,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
     # ── Data preparation ─────────────────────────────────────────────────
 
     def prepareForDraw(self, objPath, cameraPath, frameContext, oldData):
-        if isinstance(oldData, _BkUserData):
+        if isinstance(oldData, _BkUserData):  # noqa: SIM108
             data = oldData
         else:
             data = _BkUserData()
@@ -385,7 +503,8 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         except Exception:
             node_name = ""
         proxor_lines = _state.get_proxor_lines(node_name)
-        label_entry  = _state.get_label(node_name)
+        proxor_mesh = _state.get_proxor_mesh(node_name)
+        label_entry = _state.get_label(node_name)
 
         # Compose snap dict for drawing
         data.snap = {
@@ -399,7 +518,8 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             "bbox_max": bb_max,
             "surface_normal": surface_normal,
             "proxor_lines": proxor_lines,
-            "label_name":   label_entry.get("name", ""),
+            "proxor_mesh": proxor_mesh,
+            "label_name": label_entry.get("name", ""),
             "label_status": label_entry.get("status", ""),
             "active": True,
         }
@@ -412,28 +532,28 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         if not snap or not snap.get("active"):
             return
 
-        has_hit  = bool(snap.get("has_hit"))
+        has_hit = bool(snap.get("has_hit"))
         on_floor = bool(snap.get("hit_floor"))
         dl_state = int(snap.get("download_state") or 0)
-        dl_prog  = float(snap.get("download_progress") or 0.0)
+        dl_prog = float(snap.get("download_progress") or 0.0)
         downloading = dl_state == 1
 
         if downloading:
-            col = om2.MColor((0.16, 0.42, 0.84, 1.0))    # BlenderKit blue — downloading
+            col = om2.MColor((0.16, 0.42, 0.84, 1.0))  # BlenderKit blue — downloading
         elif has_hit and on_floor:
-            col = om2.MColor((0.39, 0.78, 1.00, 1.0))    # cyan  – floor plane
+            col = om2.MColor((0.39, 0.78, 1.00, 1.0))  # cyan  - floor plane
         elif has_hit:
-            col = om2.MColor((0.00, 0.86, 0.31, 1.0))    # green – geometry hit
+            col = om2.MColor((0.00, 0.86, 0.31, 1.0))  # green - geometry hit
         else:
-            col = om2.MColor((0.86, 0.20, 0.20, 1.0))    # red   – no surface (still draw, like Blender)
+            col = om2.MColor((0.86, 0.20, 0.20, 1.0))  # red   - no surface (still draw, like Blender)
 
-        loc      = tuple(snap.get("location", (0.0, 0.0, 0.0)))
-        rot_y    = float(snap.get("rotation_y", 0.0))
-        nrm      = tuple(snap.get("surface_normal", (0.0, 1.0, 0.0)))
+        loc = tuple(snap.get("location", (0.0, 0.0, 0.0)))
+        rot_y = float(snap.get("rotation_y", 0.0))
+        nrm = tuple(snap.get("surface_normal", (0.0, 1.0, 0.0)))
         # Defaults are in Maya internal units (cm).  A 1 m³ cube is the
         # fall-back so an asset with no bbox metadata is still clearly visible.
-        bbox_min = tuple(snap.get("bbox_min", (-50.0,   0.0, -50.0)))
-        bbox_max = tuple(snap.get("bbox_max", ( 50.0, 100.0,  50.0)))
+        bbox_min = tuple(snap.get("bbox_min", (-50.0, 0.0, -50.0)))
+        bbox_max = tuple(snap.get("bbox_max", (50.0, 100.0, 50.0)))
 
         # Guarantee a visible volume even if bbox_min == bbox_max (some assets
         # in the API return zero-volume bbox).  Inflate to a 1 m cube (in cm).
@@ -441,20 +561,22 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             if all(abs(mx[i] - mn[i]) < 1e-4 for i in range(3)):
                 return (-50.0, 0.0, -50.0), (50.0, 100.0, 50.0)
             return mn, mx
+
         bbox_min, bbox_max = _ensure_volume(bbox_min, bbox_max)
 
         drawManager.beginDrawable()
 
-        proxor   = snap.get("proxor_lines") or []
+        proxor = snap.get("proxor_lines") or []
+        proxor_mesh = snap.get("proxor_mesh") or []
+        has_proxor = bool(proxor) or (len(proxor_mesh) >= 3)
         cx, cy, cz = loc
-        height   = max(1e-3, bbox_max[1] - bbox_min[1])
-        fill_top = bbox_min[1] + dl_prog * height       # local-space y cut-off
+        height = max(1e-3, bbox_max[1] - bbox_min[1])
+        fill_top = bbox_min[1] + dl_prog * height  # local-space y cut-off
 
         # ── Bounding-box edges + orientation arrow lip ────────────────
-        #  Hide the outer bbox when a proxor wireframe is available — the
-        #  proxor itself communicates the shape better, and the user asked
-        #  for "only the mesh, no glowing outline" in Maya.
-        if not proxor:
+        #  Hide the outer bbox when a proxor wireframe or mesh is available —
+        #  the proxor itself communicates the shape better.
+        if not has_proxor:
             drawManager.setColor(col)
             drawManager.setLineWidth(3.0)
             corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max, nrm)]
@@ -466,27 +588,58 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             # ── Progress fill: bottom slab up to ``dl_prog`` of bbox height ──
             if downloading and dl_prog > 0.0:
                 fill_max = (bbox_max[0], fill_top, bbox_max[2])
-                fill_corners = [om2.MPoint(*c) for c in
-                                _bbox_corners(loc, rot_y, bbox_min, fill_max, nrm)]
+                fill_corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, fill_max, nrm)]
                 fill_col = om2.MColor((0.30, 0.65, 1.00, 1.0))
                 drawManager.setColor(fill_col)
                 drawManager.setLineWidth(2.0)
                 for ai, bi in _BBOX_EDGES:
                     drawManager.line(fill_corners[ai], fill_corners[bi])
 
+        # Proxor / bbox share the asset's local frame, but the bbox is
+        # drawn re-anchored to its bottom-centre so the cursor controls
+        # that anchor. Apply the same shift to the proxor data so the
+        # wireframe + hologram mesh line up with the cyan box (and with
+        # the final imported geometry, which is also re-anchored on import).
+        proxor_anchor = (
+            (bbox_min[0] + bbox_max[0]) * 0.5,
+            bbox_min[1],
+            (bbox_min[2] + bbox_max[2]) * 0.5,
+        )
+
+        # ── Proxor hologram mesh (filled triangles) ─────────────────────
+        if proxor_mesh and len(proxor_mesh) >= 3:
+            shifted_mesh = [
+                (v[0] - proxor_anchor[0], v[1] - proxor_anchor[1], v[2] - proxor_anchor[2]) for v in proxor_mesh
+            ]
+            _draw_proxor_mesh(
+                drawManager,
+                shifted_mesh,
+                loc,
+                rot_y,
+                nrm,
+                0.0,
+                bbox_max[1] - bbox_min[1],
+                dl_prog if downloading else 1.0,
+                downloading,
+            )
+
         # ── Proxor wireframe (optional) ─────────────────────────────────
         if proxor:
+            ax0, ay0, az0 = proxor_anchor
+            # Re-anchor polylines to bbox bottom-centre (see proxor mesh above).
+            proxor_shifted = [[(p[0] - ax0, p[1] - ay0, p[2] - az0) for p in poly] for poly in proxor]
+            # Fill-cutoff is now measured in the shifted frame (bottom = 0).
+            fill_top_shifted = dl_prog * max(1e-3, bbox_max[1] - bbox_min[1])
             # Two-pass clip on the local-y threshold so the proxor visually
             # "fills up" as the download progresses.  Below the cut-off uses
             # the bright fill colour; above uses the muted outline colour.
-            below_col = (om2.MColor((0.30, 0.65, 1.00, 1.0)) if downloading
-                         else om2.MColor((1.0, 0.92, 0.42, 0.9)))
+            below_col = om2.MColor((0.30, 0.65, 1.00, 1.0)) if downloading else om2.MColor((1.0, 0.92, 0.42, 0.9))
             above_col = om2.MColor((0.55, 0.55, 0.55, 0.55))
 
             def _emit(seg_pts, color, width):
                 drawManager.setColor(color)
                 drawManager.setLineWidth(width)
-                for (p0, p1) in seg_pts:
+                for p0, p1 in seg_pts:
                     ax, ay, az = _local_to_world(p0, loc, rot_y, nrm)
                     bx, by, bz = _local_to_world(p1, loc, rot_y, nrm)
                     drawManager.line(
@@ -496,7 +649,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
 
             below_segs: list[tuple] = []
             above_segs: list[tuple] = []
-            for polyline in proxor:
+            for polyline in proxor_shifted:
                 if len(polyline) < 2:
                     continue
                 for i in range(len(polyline) - 1):
@@ -505,19 +658,19 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                     if not downloading:
                         below_segs.append((a, b))
                         continue
-                    ya_below = a[1] <= fill_top
-                    yb_below = b[1] <= fill_top
+                    ya_below = a[1] <= fill_top_shifted
+                    yb_below = b[1] <= fill_top_shifted
                     if ya_below and yb_below:
                         below_segs.append((a, b))
                     elif (not ya_below) and (not yb_below):
                         above_segs.append((a, b))
                     else:
                         denom = (b[1] - a[1]) or 1e-9
-                        t = (fill_top - a[1]) / denom
+                        t = (fill_top_shifted - a[1]) / denom
                         t = max(0.0, min(1.0, t))
                         mid = (
                             a[0] + (b[0] - a[0]) * t,
-                            fill_top,
+                            fill_top_shifted,
                             a[2] + (b[2] - a[2]) * t,
                         )
                         if ya_below:
@@ -533,19 +686,21 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                 _emit(below_segs, below_col, 1.8)
 
         # ── Asset name + current step (3D text floating above the bbox) ─
-        label_name   = snap.get("label_name")   or ""
+        label_name = snap.get("label_name") or ""
         label_status = snap.get("label_status") or ""
+
         # MUIDrawManager.text() corrupts strings with any non-ASCII
         # codepoint (e.g. U+2026 "…") — it ends up rendering the whole
         # glyph atlas. Force pure ASCII.
         def _ascii(s: str) -> str:
             return s.encode("ascii", "replace").decode("ascii").replace("?", ".")
-        label_name   = _ascii(label_name)
+
+        label_name = _ascii(label_name)
         label_status = _ascii(label_status)
         if label_name or label_status:
             # Anchor a little above the bbox top so text doesn't z-fight
             # with the wireframe.
-            top_y  = bbox_max[1] + max(2.0, 0.05 * height)
+            top_y = bbox_max[1] + max(2.0, 0.05 * height)
             anchor = om2.MPoint(cx, cy + top_y, cz)
             try:
                 drawManager.setFontSize(12)
@@ -555,16 +710,13 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                 drawManager.setColor(om2.MColor((1.0, 1.0, 1.0, 1.0)))
                 drawManager.text(anchor, label_name, omr2.MUIDrawManager.kCenter)
             if label_status:
-                status_anchor = om2.MPoint(
-                    cx, cy + top_y - max(1.5, 0.03 * height), cz
-                )
+                status_anchor = om2.MPoint(cx, cy + top_y - max(1.5, 0.03 * height), cz)
                 try:
                     drawManager.setFontSize(10)
                 except Exception:
                     pass
                 drawManager.setColor(om2.MColor((0.75, 0.85, 1.0, 1.0)))
-                drawManager.text(status_anchor, label_status,
-                                 omr2.MUIDrawManager.kCenter)
+                drawManager.text(status_anchor, label_status, omr2.MUIDrawManager.kCenter)
 
         drawManager.endDrawable()
 
@@ -572,6 +724,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
 # ---------------------------------------------------------------------------
 # Registration helpers (called from maya_plugin.py)
 # ---------------------------------------------------------------------------
+
 
 def register(plugin_fn: om2.MFnPlugin) -> None:
     """Register node + draw override.  Safe to call multiple times."""
@@ -623,11 +776,12 @@ def deregister(plugin_fn: om2.MFnPlugin) -> None:
 # auto-loads this file on startup and sets autoload=True so it survives
 # Maya restarts.
 
-def initializePlugin(plugin) -> None:  # noqa: D401  (Maya API entry point)
+
+def initializePlugin(plugin) -> None:
     fn = om2.MFnPlugin(plugin, "BlenderKit", "1.0", "Any")
     register(fn)
 
 
-def uninitializePlugin(plugin) -> None:  # noqa: D401  (Maya API entry point)
+def uninitializePlugin(plugin) -> None:
     fn = om2.MFnPlugin(plugin)
     deregister(fn)

@@ -1,4 +1,4 @@
-"""tools/export_usd.py - bundled BlenderKit-client recipe.
+"""Tools/export_usd.py - bundled BlenderKit-client recipe.
 
 Open a downloaded BlenderKit .blend, unpack its packed textures into a
 resolution-specific subfolder next to the .blend (mirroring the BlenderKit
@@ -24,6 +24,7 @@ Stdout protocol (consumed by bk_maya.core.blender_runner)::
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -31,10 +32,10 @@ import traceback
 
 import bpy  # type: ignore[import-not-found]
 
-
 # ---------------------------------------------------------------------------
 # Stdout protocol helpers
 # ---------------------------------------------------------------------------
+
 
 def _emit(tag: str, *parts: object) -> None:
     sys.stdout.write(f"{tag} {' '.join(str(p) for p in parts)}\n")
@@ -42,22 +43,48 @@ def _emit(tag: str, *parts: object) -> None:
 
 
 def status(s: str) -> None:
+    """Emit a status update with the given stage name.
+
+    Attributes:
+        s: A string representing the current stage of the export process.
+    """
     _emit("BK_STATUS", s)
 
 
 def progress(frac: float, msg: str = "") -> None:
+    """Emit a progress update with the given fraction (0..1) and optional message.
+
+    Attributes:
+        frac: A float between 0 and 1 indicating the completion percentage.
+        msg: An optional string message providing additional context about the progress.
+    """
     _emit("BK_PROGRESS", f"{frac:.3f}", msg)
 
 
 def done(path: str) -> None:
+    """Emit a done update with the given path.
+
+    Attributes:
+        path: A string representing the path of the completed export.
+    """
     _emit("BK_DONE", path)
 
 
 def error(msg: str) -> None:
+    """Emit an error update with the given message.
+
+    Attributes:
+        msg: A string representing the error message.
+    """
     _emit("BK_ERROR", msg)
 
 
 def log(msg: str) -> None:
+    """Helper to log a message with the BK_PROGRESS tag (for diagnostic purposes).
+
+    Attributes:
+        msg: A string representing the log message.
+    """
     print(f"[export_usd] {msg}", flush=True)
 
 
@@ -65,42 +92,17 @@ def log(msg: str) -> None:
 # Resolution → textures subfolder suffix (mirrors blenderkit addon paths.py)
 # ---------------------------------------------------------------------------
 
-_RES_PROP_TO_KEY = {
-    "512":  "resolution_0_5K",
-    "1024": "resolution_1K",
-    "2048": "resolution_2K",
-    "4096": "resolution_4K",
-    "8192": "resolution_8K",
-    "ORIGINAL": "blend",
-}
-
-_RES_SUFFIX = {
-    "blend":           "",
-    "resolution_0_5K": "_05k",
-    "resolution_1K":   "_1k",
-    "resolution_2K":   "_2k",
-    "resolution_4K":   "_4k",
-    "resolution_8K":   "_8k",
-}
-
 # Same detection tokens as blenderkit_addon/unpack_asset_bg.py::get_resolution_from_file_path
 _RES_FROM_PATH_TOKENS = {
     "_0_5K_": "resolution_0_5K",
-    "_1K_":   "resolution_1K",
-    "_2K_":   "resolution_2K",
-    "_4K_":   "resolution_4K",
-    "_8K_":   "resolution_8K",
+    "_1K_": "resolution_1K",
+    "_2K_": "resolution_2K",
+    "_4K_": "resolution_4K",
+    "_8K_": "resolution_8K",
 }
 
 
-def _resolution_from_path(path: str) -> str:
-    for token, key in _RES_FROM_PATH_TOKENS.items():
-        if token in path:
-            return key
-    return "blend"
-
-
-def _texture_subdir(blend_path: str, max_resolution: str = "") -> tuple[str, str]:
+def _texture_subdir(blend_path: str) -> tuple[str, str]:
     """Return ``(rel_dir, abs_dir)`` for the textures subfolder next to *blend_path*.
 
     Always ``//textures/`` (no resolution suffix). The BlenderKit-Maya cache
@@ -119,13 +121,23 @@ def _texture_subdir(blend_path: str, max_resolution: str = "") -> tuple[str, str
 # Texture unpacking (mirrors blenderkit_addon/unpack_asset_bg.py::unpack_asset)
 # ---------------------------------------------------------------------------
 
-def _resolve_target_path(tex_rel_dir: str, image: "bpy.types.Image", source_path: str = "") -> str:
+
+def _resolve_target_path(tex_rel_dir: str, image: bpy.types.Image, source_path: str = "") -> str:
     """Return a ``//``-relative target path for *image* inside *tex_rel_dir*.
 
     Mirrors ``unpack_asset_bg.py::get_texture_filepath`` — collision-resolves
     by appending ``000``, ``001``, ... when another image already claims the
     same filepath. Returned path uses forward slashes (Blender convention)
     and starts with ``//`` so it stays relative to the .blend.
+
+    Attributes:
+        tex_rel_dir: The relative directory (e.g., "//textures/") where the image should be placed.
+        image: The Blender image object for which to resolve the target path.
+        source_path: An optional string representing the original source path of the image,
+            used for UDIM/sequence support.
+
+    Returns:
+        A string representing the resolved target path for the image, relative to the .blend file.
     """
     if source_path:
         path = source_path
@@ -141,10 +153,7 @@ def _resolve_target_path(tex_rel_dir: str, image: "bpy.types.Image", source_path
     final = original
     i = 0
     while True:
-        clash = any(
-            other is not image and other.filepath == final
-            for other in bpy.data.images
-        )
+        clash = any(other is not image and other.filepath == final for other in bpy.data.images)
         if not clash:
             return final
         stem, ext = os.path.splitext(original)
@@ -152,13 +161,13 @@ def _resolve_target_path(tex_rel_dir: str, image: "bpy.types.Image", source_path
         i += 1
 
 
-def unpack_textures(blend_path: str, max_resolution: str = "") -> str:
+def unpack_textures(blend_path: str) -> str:
     """Unpack packed images and relocate them into ``//textures<suffix>/``.
 
     Returns the absolute textures directory path (for diagnostic only —
     Blender-side image paths stay ``//``-relative).
     """
-    rel_dir, abs_dir = _texture_subdir(blend_path, max_resolution)
+    rel_dir, abs_dir = _texture_subdir(blend_path)
     os.makedirs(abs_dir, exist_ok=True)
     log(f"unpack: rel_dir={rel_dir} abs_dir={abs_dir}")
 
@@ -185,7 +194,7 @@ def unpack_textures(blend_path: str, max_resolution: str = "") -> str:
                 image.unpack(method="WRITE_ORIGINAL")
                 unpacked += 1
                 log(f"unpack: {image.name} -> {image_path} ({len(paths)} packed file(s))")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log(f"unpack: FAILED for {image.name}: {exc}")
         else:
             fp = _resolve_target_path(rel_dir, image, source_path=image.filepath)
@@ -205,6 +214,7 @@ def unpack_textures(blend_path: str, max_resolution: str = "") -> str:
 # Many BlenderKit assets wrap their shader in a "BlenderKit Mat" group, so
 # any Image Texture inside would be invisible to the exporter. Flatten every
 # ShaderNodeGroup in every material before exporting.
+
 
 def _flatten_material_node_groups() -> None:
     total = 0
@@ -231,7 +241,7 @@ def _rename_shader_nodes_to_material() -> None:
     - every ShaderNodeBsdf*/Emission   -> ``<Material>_<orig-name-cleaned>``
     - every ShaderNodeTexImage         -> ``<Material>_<image-or-label>``
     """
-    SHADER_IDS = {
+    shader_ids = {
         "ShaderNodeBsdfPrincipled",
         "ShaderNodeBsdfDiffuse",
         "ShaderNodeBsdfGlossy",
@@ -293,7 +303,7 @@ def _rename_shader_nodes_to_material() -> None:
                 total += 1
 
         for n in nt.nodes:
-            if n.bl_idname in SHADER_IDS and not n.name.startswith(base + "_"):
+            if n.bl_idname in shader_ids and not n.name.startswith(base + "_"):
                 n.name = f"{base}_{_safe(n.bl_idname.replace('ShaderNode', ''))}"
                 total += 1
             elif n.bl_idname == "ShaderNodeTexImage":
@@ -309,6 +319,15 @@ def _rename_shader_nodes_to_material() -> None:
 
 
 def _ungroup_all(node_tree, owner) -> int:
+    """Recursively ungroup all ShaderNodeGroups in *node_tree*.
+
+    Attributes:
+        node_tree: A Blender node tree to process.
+        owner: The owner of the node tree (e.g., a Material) for context during ungrouping.
+
+    Returns:
+        The total number of groups expanded.
+    """
     expanded = 0
     safety = 32  # avoid infinite loops on pathological graphs
     while safety > 0:
@@ -333,7 +352,7 @@ def _ungroup_all(node_tree, owner) -> int:
                     node_tree.nodes.active = gn
                     bpy.ops.node.group_ungroup()
                 expanded += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log(f"flatten: ungroup op failed for {gn.name!r}: {exc}; manual inline")
                 if _manual_inline(node_tree, gn):
                     expanded += 1
@@ -341,6 +360,15 @@ def _ungroup_all(node_tree, owner) -> int:
 
 
 def _manual_inline(parent_tree, group_node) -> bool:
+    """Fallback manual inlining if the group_ungroup operator fails (e.g. on complex node groups with reroutes).
+
+    Attributes:
+        parent_tree: The node tree into which the group should be inlined.
+        group_node: The ShaderNodeGroup to be inlined.
+
+    Returns:
+        True if the group was successfully inlined, False otherwise.
+    """
     try:
         inner = group_node.node_tree
         if inner is None:
@@ -351,17 +379,13 @@ def _manual_inline(parent_tree, group_node) -> bool:
                 continue
             new = parent_tree.nodes.new(n.bl_idname)
             for attr in ("label", "location", "width", "height"):
-                try:
+                with contextlib.suppress(Exception):
                     setattr(new, attr, getattr(n, attr))
-                except Exception:
-                    pass
             for prop in n.bl_rna.properties:
                 if prop.is_readonly or prop.identifier in ("rna_type", "name"):
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     setattr(new, prop.identifier, getattr(n, prop.identifier))
-                except Exception:
-                    pass
             copies[n] = new
 
         for lnk in inner.links:
@@ -372,10 +396,9 @@ def _manual_inline(parent_tree, group_node) -> bool:
                 if ext and ext.is_linked:
                     parent_tree.links.new(ext.links[0].from_socket, copies[tn].inputs[ts.name])
                 elif ext is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         copies[tn].inputs[ts.name].default_value = ext.default_value
-                    except Exception:
-                        pass
+
             elif tn.bl_idname == "NodeGroupOutput":
                 ext = group_node.outputs.get(ts.name)
                 if ext:
@@ -386,7 +409,7 @@ def _manual_inline(parent_tree, group_node) -> bool:
 
         parent_tree.nodes.remove(group_node)
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log(f"flatten: manual inline failed: {exc}")
         return False
 
@@ -394,6 +417,7 @@ def _manual_inline(parent_tree, group_node) -> bool:
 # ---------------------------------------------------------------------------
 # Single-material-per-mesh enforcement
 # ---------------------------------------------------------------------------
+
 
 def _is_rigged_or_unsplittable(obj) -> str:
     """Return a non-empty reason string if *obj* must NOT be split, else ''.
@@ -403,6 +427,12 @@ def _is_rigged_or_unsplittable(obj) -> str:
     multires data is lost; cross-piece smooth deformation breaks at the
     new seams). For those meshes we leave the multi-material binding
     intact and rely on USD ``GeomSubset`` instead.
+
+    Attributes:
+        obj: A Blender object to check for rigging or unsplittable features.
+
+    Returns:
+        A non-empty string describing the reason why the object cannot be split, or an empty string
     """
     me = obj.data
     if me is None:
@@ -451,20 +481,16 @@ def _split_meshes_by_material() -> None:
         log("split: no splittable multi-material meshes")
         return
 
-    try:
+    with contextlib.suppress(Exception):
         bpy.ops.object.mode_set(mode="OBJECT")
-    except Exception:
-        pass
 
     split_count = 0
     for obj in mesh_objs:
         n_slots = len(obj.material_slots)
         try:
             for o in bpy.context.scene.objects:
-                try:
+                with contextlib.suppress(Exception):
                     o.select_set(False)
-                except Exception:
-                    pass
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
 
@@ -484,12 +510,10 @@ def _split_meshes_by_material() -> None:
                 bpy.ops.object.mode_set(mode="OBJECT")
             split_count += 1
             log(f"split: {obj.name!r} ({n_slots} slots)")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log(f"split: FAILED for {obj.name!r}: {exc}")
-            try:
+            with contextlib.suppress(Exception):
                 bpy.ops.object.mode_set(mode="OBJECT")
-            except Exception:
-                pass
 
     # Collapse each resulting mesh down to its single actually-used material.
     # IMPORTANT: pick by the face's material_index (Blender's canonical
@@ -511,7 +535,7 @@ def _split_meshes_by_material() -> None:
             used_mats = []
             seen = set()
             for idx in used_idx:
-                if 0 <= idx < len(obj.material_slots):
+                if 0 <= idx < len(obj.material_slots):  # noqa: SIM108
                     m = obj.material_slots[idx].material
                 else:
                     m = None
@@ -532,14 +556,12 @@ def _split_meshes_by_material() -> None:
                     p.material_index = 0
                 log(f"split: collapsed {obj.name!r} -> slot[{kept_idx}] {kept_name!r}")
             else:
-                mat_list = [
-                    f"slot[{i}]={m.name if m else '<None>'}" for i, m in used_mats
-                ]
+                mat_list = [f"slot[{i}]={m.name if m else '<None>'}" for i, m in used_mats]
                 log(
                     f"split: {obj.name!r} still uses {len(used_mats)} materials "
-                    f"after separate — leaving slots intact ({', '.join(mat_list)})"
+                    f"after separate — leaving slots intact ({', '.join(mat_list)})",
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log(f"split: slot cleanup failed for {obj.name!r}: {exc}")
 
     log(f"split: processed {split_count} multi-material mesh(es), skipped {len(skipped)}")
@@ -580,9 +602,7 @@ def _force_single_material_per_mesh() -> None:
         hist = Counter(p.material_index for p in polys)
         # Dominant slot index (the one most faces use).
         dom_idx, dom_count = hist.most_common(1)[0]
-        dom_mat = (
-            slots[dom_idx].material if 0 <= dom_idx < len(slots) else None
-        )
+        dom_mat = slots[dom_idx].material if 0 <= dom_idx < len(slots) else None
         dom_name = dom_mat.name if dom_mat else "<None>"
         total = len(polys)
         lost = total - dom_count
@@ -595,10 +615,7 @@ def _force_single_material_per_mesh() -> None:
             p.material_index = 0
         forced += 1
 
-        msg = (
-            f"force-single: {obj.name!r} -> {dom_name!r} "
-            f"(was slot[{dom_idx}], {dom_count}/{total} faces"
-        )
+        msg = f"force-single: {obj.name!r} -> {dom_name!r} (was slot[{dom_idx}], {dom_count}/{total} faces"
         if lost > 0:
             msg += f", {lost} face(s) reassigned from other slots"
         msg += ")"
@@ -677,7 +694,7 @@ def _remove_empty_uv_layers() -> None:
             try:
                 layers.remove(layers[name])
                 removed_total += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log(f"remove-empty-uv: failed on {obj.name!r}/{name!r}: {exc}")
 
         if to_remove:
@@ -758,28 +775,13 @@ def _fix_primary_uv_set() -> None:
 
         # Apply: mark chosen as both active and active_render.
         for lyr in layers:
-            lyr.active_render = (lyr.name == chosen)
-        try:
+            lyr.active_render = lyr.name == chosen
+        with contextlib.suppress(Exception):
             layers.active = layers[chosen]
-        except Exception:
-            pass
-
-        # If the chosen layer isn't already index 0, move it there so
-        # USD's first uvset is unambiguously the "main" one.
-        if layers[0].name != chosen and len(layers) > 1:
-            try:
-                # Blender's API lacks a reorder for uv_layers; rebuild
-                # by copying data: simplest portable approach is to
-                # rename to force ordering not reliable. Just trust
-                # active_render — Maya respects the renderable flag.
-                pass
-            except Exception:
-                pass
 
         fixed += 1
         if used_names:
-            log(f"primary-uv: {obj.name!r} -> {chosen!r} "
-                f"(from material nodes; candidates={dict(used_names)})")
+            log(f"primary-uv: {obj.name!r} -> {chosen!r} (from material nodes; candidates={dict(used_names)})")
         else:
             log(f"primary-uv: {obj.name!r} -> {chosen!r} (fallback)")
 
@@ -812,10 +814,8 @@ def _sanitize_meshes_for_usd_export() -> None:
 
     # Deselect all, then convert each mesh individually to keep memory
     # bounded and isolate failures.
-    try:
+    with contextlib.suppress(Exception):
         bpy.ops.object.select_all(action="DESELECT")
-    except Exception:
-        pass
 
     rebuilt = 0
     failed = 0
@@ -825,10 +825,8 @@ def _sanitize_meshes_for_usd_export() -> None:
             if obj.data.library is not None:
                 continue
             # Select & activate just this object.
-            try:
+            with contextlib.suppress(Exception):
                 bpy.ops.object.select_all(action="DESELECT")
-            except Exception:
-                pass
             obj.select_set(True)
             view_layer.objects.active = obj
             # Re-bake the mesh from the evaluated depsgraph.
@@ -837,14 +835,12 @@ def _sanitize_meshes_for_usd_export() -> None:
             mesh.validate(verbose=False)
             mesh.update()
             rebuilt += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             log(f"sanitize: convert failed for {obj.name!r}: {exc}")
 
-    try:
+    with contextlib.suppress(Exception):
         bpy.ops.object.select_all(action="DESELECT")
-    except Exception:
-        pass
 
     log(f"sanitize: rebuilt {rebuilt} mesh(es), {failed} failed")
 
@@ -853,22 +849,27 @@ def _sanitize_meshes_for_usd_export() -> None:
 # Main export
 # ---------------------------------------------------------------------------
 
-def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> None:
+
+def export_to_usd(blend_path: str, out_usd: str) -> None:
+    """Export a .blend to .usd with the necessary pre-processing for Maya compatibility.
+
+    Attributes:
+      - blend_path: path to the source .blend file to export
+      - out_usd: path to write the resulting .usd file
+    """
     status("Opening blend")
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     progress(0.05, "Opening blend")
 
     # Make everything visible so the export captures the full asset.
     for obj in bpy.context.scene.objects:
-        try:
+        with contextlib.suppress(Exception):
             obj.hide_set(False)
-        except Exception:
-            pass
         obj.hide_render = False
         obj.hide_viewport = False
 
     status("Unpacking textures")
-    unpack_textures(blend_path, max_resolution=max_resolution)
+    unpack_textures(blend_path)
     progress(0.30, "Unpacked textures")
 
     status("Flattening materials")
@@ -884,11 +885,9 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
     try:
         bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=False)
         # Clean up Blender's automatic backup.
-        try:
+        with contextlib.suppress(Exception):
             os.remove(blend_path + "1")
-        except OSError:
-            pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log(f"save_as_mainfile failed (non-fatal): {exc}")
 
     # IMPORTANT: do the destructive single-material split AFTER saving the
@@ -917,35 +916,35 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
     out_dir = os.path.dirname(out_usd) or "."
     os.makedirs(out_dir, exist_ok=True)
 
-    desired = dict(
-        filepath=out_usd,
-        selected_objects_only=False,
-        visible_objects_only=True,
-        export_animation=True,
-        export_hair=True,
-        export_uvmaps=True,
-        export_normals=True,
-        export_materials=True,
+    desired = {
+        "filepath": out_usd,
+        "selected_objects_only": False,
+        "visible_objects_only": True,
+        "export_animation": True,
+        "export_hair": True,
+        "export_uvmaps": True,
+        "export_normals": True,
+        "export_materials": True,
         # Textures are already on disk via our unpack step — no need to
         # copy them again. This also keeps the USD asset-paths pointing at
         # the resolution-specific ``textures_2k/`` next to the blend.
-        export_textures=False,
-        overwrite_textures=False,
-        relative_paths=True,
-        generate_preview_surface=True,
+        "export_textures": False,
+        "overwrite_textures": False,
+        "relative_paths": True,
+        "generate_preview_surface": True,
         # Emit MaterialX network alongside UsdPreviewSurface. Maya's mayaUsd
         # reads MaterialX with higher PBR fidelity (roughness / metallic /
         # normal). Both networks coexist in the .usd.
-        generate_materialx_network=True,
-        root_prim_path="/root",
-        default_prim_path="/root",
-        export_global_forward_selection="Y",
-        export_global_up_selection="Z",
-    )
+        "generate_materialx_network": True,
+        "root_prim_path": "/root",
+        "default_prim_path": "/root",
+        "export_global_forward_selection": "Y",
+        "export_global_up_selection": "Z",
+    }
     try:
         rna_props = bpy.ops.wm.usd_export.get_rna_type().properties
         rna = set(rna_props.keys())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log(f"usd_export: rna introspection failed ({exc}); passing all kwargs")
         rna = set(desired)
 
@@ -954,8 +953,7 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
     if skipped:
         log(f"usd_export: skipped unknown kwargs = {skipped}")
     # Loud diagnostic: confirm what we actually pass for texture-handling.
-    tex_flags = {k: v for k, v in accepted.items()
-                 if "texture" in k.lower() or "relative" in k.lower()}
+    tex_flags = {k: v for k, v in accepted.items() if "texture" in k.lower() or "relative" in k.lower()}
     log(f"usd_export: texture-related kwargs accepted = {tex_flags}")
 
     bpy.ops.wm.usd_export(**accepted)
@@ -966,10 +964,11 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def _parse_args() -> dict:
     if "--" not in sys.argv:
         raise RuntimeError("missing '--' separator in argv")
-    args = sys.argv[sys.argv.index("--") + 1:]
+    args = sys.argv[sys.argv.index("--") + 1 :]
     if not args:
         raise RuntimeError("missing args JSON path after '--'")
     with open(args[-1], encoding="utf-8") as fh:
@@ -977,6 +976,13 @@ def _parse_args() -> dict:
 
 
 def main() -> int:
+    """Main entry point when run as a Blender script.
+
+    Expects a single JSON file argument with the following keys:
+      - blend_path: path to the source .blend file to export
+      - out_usd: path to write the resulting .usd file
+      - max_resolution: optional max texture resolution (e.g. "2048")
+    """
     try:
         params = _parse_args()
     except Exception as exc:
@@ -984,8 +990,7 @@ def main() -> int:
         return 2
 
     blend_path = params.get("blend_path") or ""
-    out_usd    = params.get("out_usd") or ""
-    max_res    = str(params.get("max_resolution") or "")
+    out_usd = params.get("out_usd") or ""
 
     if not blend_path or not os.path.isfile(blend_path):
         error(f"blend_path not found: {blend_path!r}")
@@ -995,7 +1000,7 @@ def main() -> int:
         return 1
 
     try:
-        export_to_usd(blend_path, out_usd, max_resolution=max_res)
+        export_to_usd(blend_path, out_usd)
     except Exception as exc:
         error(f"export failed: {exc}")
         traceback.print_exc(file=sys.stdout)

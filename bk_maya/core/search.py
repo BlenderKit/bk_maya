@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..api import client as api
-from . import auth, client_lib, prefs as _prefs_mod
+from . import auth, client_lib
+from . import prefs as _prefs_mod
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +31,9 @@ ErrorCallback = Callable[[str], None]
 
 # ── tempdir per asset type (mirrors Blender's ``get_temp_dir``) ──────────────
 
+
 def _tempdir_for(asset_type: str) -> str:
-    base = os.path.join(_prefs_mod.prefs.global_dir_resolved(),
-                        f"{asset_type}_search")
+    base = os.path.join(_prefs_mod.prefs.global_dir_resolved(), f"{asset_type}_search")
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -57,12 +59,13 @@ def cancel() -> None:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+
 def search(
     query: str = "",
     asset_type: str = "model",
     order: str = "",
     page_size: int = 24,
-    page_offset: int = 0,            # unused (kept for callers' compatibility)
+    page_offset: int = 0,  # unused (kept for callers' compatibility)
     free_only: bool = False,
     quality_limit: int = 0,
     license_filter: str = "ANY",
@@ -152,8 +155,8 @@ def search(
         if on_results is None:
             return
         results = result.get("results") or []
-        count   = int(result.get("count") or 0)
-        nxt     = result.get("next") or ""
+        count = int(result.get("count") or 0)
+        nxt = result.get("next") or ""
         on_results(results, count, nxt)
 
     def _on_error(msg: str) -> None:
@@ -187,7 +190,7 @@ def search(
 def search_next_page(
     query: str,
     asset_type: str,
-    current_count: int,            # unused; here for backwards compatibility
+    current_count: int,  # unused; here for backwards compatibility
     page_size: int = 24,
     on_results: ResultCallback | None = None,
     on_error: ErrorCallback | None = None,

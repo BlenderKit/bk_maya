@@ -38,9 +38,11 @@ _REFRESH_RESERVE = 3 * 24 * 3600  # 3 days, mirrors Blender addon
 # Token storage
 # -------------------------------------------------------------------------
 
+
 def _token_file() -> str:
     if sys.platform == "win32":
         import ctypes
+
         buf = ctypes.create_unicode_buffer(260)
         ctypes.windll.shell32.SHGetFolderPathW(None, 0x0005, None, 0, buf)
         docs = buf.value
@@ -92,6 +94,7 @@ def _clear_tokens() -> None:
 # PKCE
 # -------------------------------------------------------------------------
 
+
 def _generate_pkce_pair() -> tuple[str, str]:
     rand = random.SystemRandom()
     verifier = "".join(rand.choices(string.ascii_letters + string.digits, k=128))
@@ -117,10 +120,10 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
     global _login_error, _refresh_inflight
     if status == "finished" and result.get("access_token"):
         tokens = {
-            "access_token":  result["access_token"],
+            "access_token": result["access_token"],
             "refresh_token": result.get("refresh_token", ""),
-            "expires_in":    result.get("expires_in", 3600),
-            "expires_at":    time.time() + int(result.get("expires_in", 3600)),
+            "expires_in": result.get("expires_in", 3600),
+            "expires_at": time.time() + int(result.get("expires_in", 3600)),
         }
         _save_tokens(tokens)
         log.info("BlenderKit tokens received from client.")
@@ -142,6 +145,7 @@ client_lib.set_login_callback(_on_login_task)
 # Public API
 # -------------------------------------------------------------------------
 
+
 def is_logged_in() -> bool:
     return bool(_load_tokens().get("access_token"))
 
@@ -151,7 +155,7 @@ def get_api_key() -> str:
     token is within ``_REFRESH_RESERVE`` seconds of expiry, but never blocks.
     """
     tokens = _load_tokens()
-    access  = tokens.get("access_token",  "")
+    access = tokens.get("access_token", "")
     refresh = tokens.get("refresh_token", "")
     if not access:
         return ""
@@ -187,7 +191,7 @@ def login(timeout: float = 180.0) -> bool:
     global _login_error
 
     client_lib.ensure_running()
-    port = client_lib._active_port  # noqa: SLF001
+    port = client_lib._active_port
     if not port:
         log.error("Client not running; cannot start login.")
         return False
@@ -230,7 +234,7 @@ def logout() -> None:
     """Revoke tokens on the server and clear local storage."""
     tokens = _load_tokens()
     refresh = tokens.get("refresh_token", "")
-    access  = tokens.get("access_token", "")
+    access = tokens.get("access_token", "")
     if refresh:
         try:
             client_lib.ensure_running()

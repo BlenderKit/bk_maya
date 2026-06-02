@@ -22,27 +22,38 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import threading
 import webbrowser
 from typing import Any
 
 import maya.cmds as cmds
-
-from qtpy.QtCore import Qt, Signal, QObject, QTimer, QEvent
-from qtpy.QtGui  import QPixmap, QColor, QCursor
+from qtpy.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
+from qtpy.QtGui import QColor, QCursor, QPixmap
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QScrollArea,
-    QLabel, QFrame, QButtonGroup, QStackedWidget,
-    QCheckBox, QSpinBox, QSizePolicy, QDialog,
-    QTextEdit, QAction, QMenu, QFormLayout, QComboBox,
+    QAction,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QLayout,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..core import auth, search as bk_search
+from ..core import auth, client_lib
 from ..core import icons as bk_icons
-from ..core import client_lib
+from ..core import search as bk_search
 from ..core.prefs import prefs
 
 log = logging.getLogger(__name__)
@@ -50,32 +61,33 @@ log = logging.getLogger(__name__)
 # NOTE: Bumped from "BlenderKitAssetBar" so old workspaceControl state
 # (created without ``retain``/``closeCommand``) from prior sessions is
 # bypassed and the close-protection flags below actually take effect.
-CONTROL_NAME  = "BlenderKitAssetBarV2"
-GRID_SPACING  = 6
-PAGE_SIZE     = 24
+CONTROL_NAME = "BlenderKitAssetBarV2"
+GRID_SPACING = 6
+PAGE_SIZE = 24
 
 ASSET_TYPES = [
-    ("model",     "Models"),
-    ("material",  "Materials"),
-    ("scene",     "Scenes"),
-    ("hdr",       "HDRIs"),
+    ("model", "Models"),
+    ("material", "Materials"),
+    ("scene", "Scenes"),
+    ("hdr", "HDRIs"),
     ("printable", "Printables"),
 ]
 
 # Assigned in _populate_workspace_control()
-_current_bar: "AssetBarWidget | None" = None
+_current_bar: AssetBarWidget | None = None
 
 
 # ---------------------------------------------------------------------------
 # Smooth-scrolling QScrollArea  (also emits viewport_resized)
 # ---------------------------------------------------------------------------
 
+
 class _SmoothScrollArea(QScrollArea):
     """QScrollArea with exponential-easing wheel animation."""
 
     viewport_resized = Signal()
 
-    _EASE    = 0.15
+    _EASE = 0.15
     _TICK_MS = 14
     _STOP_PX = 1.0
 
@@ -95,7 +107,7 @@ class _SmoothScrollArea(QScrollArea):
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
         delta = event.angleDelta().y()
-        bar   = self.verticalScrollBar()
+        bar = self.verticalScrollBar()
         if not self._anim.isActive():
             self._target = float(bar.value())
         self._target = max(0.0, min(float(bar.maximum()), self._target - delta * 1.5))
@@ -105,13 +117,13 @@ class _SmoothScrollArea(QScrollArea):
     def _tick(self) -> None:
         bar = self.verticalScrollBar()
         self._target = max(0.0, min(float(bar.maximum()), self._target))
-        cur  = float(bar.value())
+        cur = float(bar.value())
         diff = self._target - cur
         if abs(diff) <= self._STOP_PX:
-            bar.setValue(int(round(self._target)))
+            bar.setValue(int(round(self._target)))  # noqa: RUF046
             self._anim.stop()
             return
-        bar.setValue(int(round(cur + diff * self._EASE)))
+        bar.setValue(int(round(cur + diff * self._EASE)))  # noqa: RUF046
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +134,7 @@ class _SmoothScrollArea(QScrollArea):
 # ``thumbnail_download`` tasks on ``/report``.  A single QTimer per Maya
 # session drains the queue and dispatches them via ``client_lib`` to the
 # callbacks registered by ``core.search`` and ``AssetTile``.
+
 
 class _ReportPoller(QObject):
     INTERVAL_MS = 200
@@ -142,14 +155,14 @@ class _ReportPoller(QObject):
     def _tick(self) -> None:
         try:
             tasks = client_lib.get_reports(api_key=auth.get_api_key())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.debug("Report poll error: %s", exc)
             return
         if tasks:
             client_lib.dispatch_tasks(tasks)
 
 
-_poller: "_ReportPoller | None" = None
+_poller: _ReportPoller | None = None
 
 
 def _ensure_poller() -> _ReportPoller:
@@ -163,6 +176,7 @@ def _ensure_poller() -> _ReportPoller:
 # ---------------------------------------------------------------------------
 # Asset detail dialog  (right-click)
 # ---------------------------------------------------------------------------
+
 
 class AssetDetailDialog(QDialog):
     """Non-modal detail popup — shows asset metadata and thumbnail."""
@@ -202,9 +216,7 @@ class AssetDetailDialog(QDialog):
         if cached and os.path.exists(cached):
             pix = QPixmap(cached)
             if not pix.isNull():
-                thumb_lbl.setPixmap(
-                    pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                )
+                thumb_lbl.setPixmap(pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
             else:
                 thumb_lbl.setPixmap(bk_icons.notready_pixmap(128))
         else:
@@ -223,22 +235,22 @@ class AssetDetailDialog(QDialog):
             val.setWordWrap(True)
             info_layout.addRow(lbl, val)
 
-        _row("Name",      asset.get("name", ""))
+        _row("Name", asset.get("name", ""))
         author = asset.get("author", {}) or {}
         author_name = author.get("fullName", "") or asset.get("authorUsername", "")
-        _row("Author",    author_name)
-        _row("Type",      (asset.get("assetType") or "").capitalize())
+        _row("Author", author_name)
+        _row("Type", (asset.get("assetType") or "").capitalize())
         is_free = asset.get("isFree", False)
-        price   = asset.get("priceExVatFormatted") or asset.get("price")
-        _row("Price",     "FREE" if is_free else (str(price) if price else "—"))
-        _row("License",   _license_label(asset))
+        price = asset.get("priceExVatFormatted") or asset.get("price")
+        _row("Price", "FREE" if is_free else (str(price) if price else "—"))
+        _row("License", _license_label(asset))
         _row("Downloads", str(asset.get("downloadCount") or ""))
 
         # Average rating (BlenderKit returns ``ratingsAverage`` as dict
         # ``{"quality": x, "working_hours": y}`` and ``ratingsCount`` similarly).
         rat_avg = asset.get("ratingsAverage") or {}
-        rat_cnt = asset.get("ratingsCount")   or {}
-        if isinstance(rat_avg, dict):
+        rat_cnt = asset.get("ratingsCount") or {}
+        if isinstance(rat_avg, dict):  # noqa: SIM108
             avg_q = rat_avg.get("quality")
         else:
             avg_q = rat_avg
@@ -247,10 +259,9 @@ class AssetDetailDialog(QDialog):
             try:
                 avg_f = float(avg_q)
                 # BlenderKit uses a 1..10 scale (same as the Blender addon).
-                filled = max(0, min(10, int(round(avg_f))))
-                stars  = "★" * filled + "☆" * (10 - filled)
-                _row("Rating", f"<span style='color:#f5c33b'>{stars}</span>  "
-                               f"{avg_f:.1f}  ({cnt_q or 0})")
+                filled = max(0, min(10, int(round(avg_f))))  # noqa: RUF046
+                stars = "★" * filled + "☆" * (10 - filled)
+                _row("Rating", f"<span style='color:#f5c33b'>{stars}</span>  {avg_f:.1f}  ({cnt_q or 0})")
             except (TypeError, ValueError):
                 pass
 
@@ -274,12 +285,9 @@ class AssetDetailDialog(QDialog):
             root.addWidget(QLabel("<b>Description</b>"))
             desc_lbl = QLabel(desc)
             desc_lbl.setWordWrap(True)
-            desc_lbl.setTextInteractionFlags(
-                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
-            )
+            desc_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
             desc_lbl.setStyleSheet(
-                "QLabel { background: #252525; color: #dedede; "
-                "         border: 1px solid #444; padding: 6px; }"
+                "QLabel { background: #252525; color: #dedede;          border: 1px solid #444; padding: 6px; }"
             )
             desc_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
             desc_lbl.setMinimumWidth(380)
@@ -303,9 +311,7 @@ class AssetDetailDialog(QDialog):
             self._star_labels: list[QLabel] = []
             for i in range(1, 11):
                 star = QLabel("☆")
-                star.setStyleSheet(
-                    "QLabel { color: #f5c33b; font-size: 18px; padding: 0 1px; }"
-                )
+                star.setStyleSheet("QLabel { color: #f5c33b; font-size: 18px; padding: 0 1px; }")
                 star.setCursor(Qt.PointingHandCursor)
                 star.mousePressEvent = lambda ev, n=i: self._submit_rating(n)  # type: ignore[assignment]
                 self._star_labels.append(star)
@@ -320,17 +326,15 @@ class AssetDetailDialog(QDialog):
         author_id = author.get("id")
         if author_id:
             author_btn = QPushButton(f"More by {author_name or 'this author'}")
-            author_btn.clicked.connect(
-                lambda: self._trigger_author_search(int(author_id), author_name)
-            )
+            author_btn.clicked.connect(lambda: self._trigger_author_search(int(author_id), author_name))
             btn_row.addWidget(author_btn)
 
         slug = asset.get("slug", "") or asset_id
         if slug:
             view_btn = QPushButton("View on BlenderKit.com")
-            view_btn.clicked.connect(lambda: webbrowser.open(
-                f"https://www.blenderkit.com/asset-gallery-detail/{slug}/"
-            ))
+            view_btn.clicked.connect(
+                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
+            )
             btn_row.addWidget(view_btn)
 
         close_btn = QPushButton("Close")
@@ -356,9 +360,10 @@ class AssetDetailDialog(QDialog):
         def _worker() -> None:
             try:
                 from ..api import client as api_client
+
                 api_client.rate_asset(asset_id, "quality", float(score), api_key)
                 msg, ok = (f"Rated {score}/10", True)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("Rating submission failed: %s", exc)
                 msg, ok = (f"Failed: {exc}", False)
 
@@ -370,9 +375,11 @@ class AssetDetailDialog(QDialog):
                     # Revert stars on failure.
                     for lbl in getattr(self, "_star_labels", []):
                         lbl.setText("☆")
+
             QTimer.singleShot(0, _apply)
 
         import threading
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _trigger_author_search(self, author_id: int, author_name: str) -> None:
@@ -383,6 +390,7 @@ class AssetDetailDialog(QDialog):
     def show_near_cursor(self) -> None:
         """Show dialog near the current cursor, clamped to screen."""
         from qtpy.QtWidgets import QApplication
+
         pos = QCursor.pos()
         screen = QApplication.screenAt(pos)
         self.adjustSize()
@@ -390,7 +398,7 @@ class AssetDetailDialog(QDialog):
         y = pos.y() + 12
         if screen:
             geo = screen.availableGeometry()
-            x = min(x, geo.right()  - self.width()  - 4)
+            x = min(x, geo.right() - self.width() - 4)
             y = min(y, geo.bottom() - self.height() - 4)
         self.move(x, y)
         self.show()
@@ -400,24 +408,24 @@ class AssetDetailDialog(QDialog):
 # Licence / badge helpers
 # ---------------------------------------------------------------------------
 
-_BADGE_SIZE     = 20
-_DRAG_THRESHOLD = 8   # px manhattan distance before drag-to-place starts
+_BADGE_SIZE = 20
+_DRAG_THRESHOLD = 8  # px manhattan distance before drag-to-place starts
 
 
 def _license_label(asset: dict[str, Any]) -> str:
     lic = (asset.get("license") or "").lower()
     mapping = {
         "royalty_free": "Royalty Free",
-        "cc_zero":      "CC0",
-        "cc-zero":      "CC0",
-        "cc0":          "CC0",
-        "editorial":    "Editorial",
-        "commercial":   "Commercial",
+        "cc_zero": "CC0",
+        "cc-zero": "CC0",
+        "cc0": "CC0",
+        "editorial": "Editorial",
+        "commercial": "Commercial",
     }
     return mapping.get(lic, lic.replace("_", " ").title()) if lic else "—"
 
 
-def _license_icon_pix(asset: dict[str, Any], size: int = _BADGE_SIZE) -> "QPixmap | None":
+def _license_icon_pix(asset: dict[str, Any], size: int = _BADGE_SIZE) -> QPixmap | None:
     lic = (asset.get("license") or "").lower()
     if lic in ("cc_zero", "cc-zero", "cc0"):
         return bk_icons.icon("cc0", size=size)
@@ -426,7 +434,7 @@ def _license_icon_pix(asset: dict[str, Any], size: int = _BADGE_SIZE) -> "QPixma
     return None
 
 
-def _main_badge_pix(asset: dict[str, Any]) -> "QPixmap | None":
+def _main_badge_pix(asset: dict[str, Any]) -> QPixmap | None:
     """Return the primary badge pixmap for a tile (FREE / sale / cc0 / rf)."""
     is_free = bool(asset.get("isFree", False))
     if is_free:
@@ -445,17 +453,17 @@ def _main_badge_pix(asset: dict[str, Any]) -> "QPixmap | None":
     return None
 
 
-def _verification_pix(asset: dict[str, Any]) -> "QPixmap | None":
+def _verification_pix(asset: dict[str, Any]) -> QPixmap | None:
     """Return verification-status badge (vs_*.png), or None."""
     status = (asset.get("verificationStatus") or "").lower().replace(" ", "_")
     icon_map = {
-        "validated":  "vs_validated",
-        "ready":      "vs_ready",
-        "on_hold":    "vs_on_hold",
-        "uploaded":   "vs_uploaded",
-        "uploading":  "vs_uploading",
-        "rejected":   "vs_rejected",
-        "deleted":    "vs_deleted",
+        "validated": "vs_validated",
+        "ready": "vs_ready",
+        "on_hold": "vs_on_hold",
+        "uploaded": "vs_uploaded",
+        "uploading": "vs_uploading",
+        "rejected": "vs_rejected",
+        "deleted": "vs_deleted",
     }
     key = icon_map.get(status)
     return bk_icons.icon(key, size=_BADGE_SIZE) if key else None
@@ -464,6 +472,7 @@ def _verification_pix(asset: dict[str, Any]) -> "QPixmap | None":
 # ---------------------------------------------------------------------------
 # Asset tile  — placeholder first, populated later
 # ---------------------------------------------------------------------------
+
 
 class AssetTile(QFrame):
     """Single asset card.
@@ -478,17 +487,16 @@ class AssetTile(QFrame):
     def __init__(self, cell_w: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        self._asset:          dict[str, Any] = {}
-        self._asset_id:       str  = ""
-        self._thumb_path:     str  = ""
+        self._asset: dict[str, Any] = {}
+        self._asset_id: str = ""
+        self._thumb_path: str = ""
         self._is_placeholder: bool = True
-        self._thumb_sz:       int  = max(32, cell_w - 8)
-        self._press_pos:      QPoint | None = None
+        self._thumb_sz: int = max(32, cell_w - 8)
+        self._press_pos: QPoint | None = None
 
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet(
-            "AssetTile { background: #252525; border-radius: 4px; }"
-            "AssetTile:hover { background: #2f2f2f; }"
+            "AssetTile { background: #252525; border-radius: 4px; }AssetTile:hover { background: #2f2f2f; }"
         )
 
         root = QVBoxLayout(self)
@@ -531,7 +539,7 @@ class AssetTile(QFrame):
         if not self._is_placeholder:
             return
         self._is_placeholder = False
-        self._asset    = asset
+        self._asset = asset
         self._asset_id = asset.get("assetBaseId", "") or asset.get("id", "")
 
         name = asset.get("name", "Unnamed")
@@ -550,8 +558,7 @@ class AssetTile(QFrame):
             lock_pix = bk_icons.icon("locked", size=_BADGE_SIZE)
             if lock_pix and not lock_pix.isNull():
                 self._lock_badge.setPixmap(lock_pix)
-                self._lock_badge.move(self._thumb_sz - _BADGE_SIZE - 4,
-                                      self._thumb_sz - _BADGE_SIZE - 4)
+                self._lock_badge.move(self._thumb_sz - _BADGE_SIZE - 4, self._thumb_sz - _BADGE_SIZE - 4)
                 self._lock_badge.show()
                 self._lock_badge.raise_()
 
@@ -586,8 +593,7 @@ class AssetTile(QFrame):
             self._show_notready()
 
         if self._lock_badge.isVisible():
-            self._lock_badge.move(thumb_sz - _BADGE_SIZE - 4,
-                                  thumb_sz - _BADGE_SIZE - 4)
+            self._lock_badge.move(thumb_sz - _BADGE_SIZE - 4, thumb_sz - _BADGE_SIZE - 4)
 
     # ── Context menu ─────────────────────────────────────────────────────
 
@@ -604,24 +610,20 @@ class AssetTile(QFrame):
         detail_act.triggered.connect(self._open_detail)
         menu.addAction(detail_act)
 
-        author = (self._asset.get("author") or {})
+        author = self._asset.get("author") or {}
         author_id = author.get("id")
         bar = _current_bar
         if author_id and bar is not None:
             author_name = author.get("fullName", "") or "this author"
             author_act = QAction(f"Search by {author_name}", menu)
-            author_act.triggered.connect(
-                lambda: bar.search_by_author(int(author_id), author_name)
-            )
+            author_act.triggered.connect(lambda: bar.search_by_author(int(author_id), author_name))
             menu.addAction(author_act)
 
         slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
         if slug:
             web_act = QAction("View on BlenderKit.com", menu)
             web_act.triggered.connect(
-                lambda: webbrowser.open(
-                    f"https://www.blenderkit.com/asset-gallery-detail/{slug}/"
-                )
+                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
             )
             menu.addAction(web_act)
 
@@ -639,11 +641,11 @@ class AssetTile(QFrame):
             self._press_pos is not None
             and not self._is_placeholder
             and self._asset
-            and (event.globalPos() - self._press_pos).manhattanLength()
-            >= _DRAG_THRESHOLD
+            and (event.globalPos() - self._press_pos).manhattanLength() >= _DRAG_THRESHOLD
         ):
-            self._press_pos = None   # prevent re-triggering
+            self._press_pos = None  # prevent re-triggering
             from bk_maya.ui.placement import start_drag
+
             start_drag(self._asset, self._thumb_path)
         super().mouseMoveEvent(event)
 
@@ -657,6 +659,7 @@ class AssetTile(QFrame):
         ):
             # Click without drag: place at origin
             from bk_maya.ui.placement import place_at_origin
+
             place_at_origin(self._asset, self._thumb_path)
         self._press_pos = None
         super().mouseReleaseEvent(event)
@@ -692,7 +695,8 @@ class AssetTile(QFrame):
         if not pix.isNull():
             self._thumb.setPixmap(
                 pix.scaled(
-                    self._thumb_sz, self._thumb_sz,
+                    self._thumb_sz,
+                    self._thumb_sz,
                     Qt.KeepAspectRatioByExpanding,
                     Qt.SmoothTransformation,
                 )
@@ -729,6 +733,7 @@ class AssetTile(QFrame):
         ``Middle`` thumb as a fallback before giving up.
         """
         import urllib.parse as _up
+
         candidates: list[str] = []
         for key in (
             "thumbnailSmallUrlWebp",
@@ -757,6 +762,7 @@ class AssetTile(QFrame):
 # Tile container  — no Qt layout manager, manual geometry
 # ---------------------------------------------------------------------------
 
+
 class _TileContainer(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -775,11 +781,11 @@ class _TileContainer(QWidget):
             tile.resize_to(cell_w)
             row, col_i = divmod(idx, cols)
             x = margin + col_i * (cell_w + GRID_SPACING)
-            y = margin + row   * (cell_h + GRID_SPACING)
+            y = margin + row * (cell_h + GRID_SPACING)
             tile.move(x, y)
             tile.show()
 
-        n_rows  = (len(tiles) + cols - 1) // cols
+        n_rows = (len(tiles) + cols - 1) // cols
         total_h = margin + n_rows * cell_h + max(0, n_rows - 1) * GRID_SPACING + margin
         self.setFixedHeight(max(total_h, 8))
 
@@ -788,13 +794,13 @@ class _TileContainer(QWidget):
 # Asset grid  — search state + tile lifecycle
 # ---------------------------------------------------------------------------
 
+
 class _ResultsBridge(QObject):
-    results_ready  = Signal(list, int, str)   # (results, total, next_url)
+    results_ready = Signal(list, int, str)  # (results, total, next_url)
     error_occurred = Signal(str)
 
 
 class AssetGrid(QWidget):
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
@@ -802,33 +808,33 @@ class AssetGrid(QWidget):
         self._bridge.results_ready.connect(self._on_results)
         self._bridge.error_occurred.connect(self._on_error)
 
-        self._query:           str  = ""
-        self._asset_type:      str  = "model"
-        self._results:         list[dict[str, Any]] = []
-        self._total:           int  = 0
-        self._next_url:        str  = ""    # cursor URL for next page
-        self._loading:         bool = False
-        self._free_only:       bool = False
-        self._quality_limit:   int  = 0
-        self._license_filter:  str  = "ANY"
-        self._animated_only:   bool = False
-        self._texture_res_min: int  = 0
-        self._texture_res_max: int  = 0
-        self._file_size_min:   int  = 0
-        self._file_size_max:   int  = 0
-        self._poly_count_min:  int  = 0
-        self._poly_count_max:  int  = 0
-        self._style:           str  = "ANY"
-        self._condition:       str  = "UNSPECIFIED"
-        self._design_year_min: int  = 0
-        self._design_year_max: int  = 0
-        self._geometry_nodes:  bool = False
-        self._extra_filters:   dict[str, Any] = {}
+        self._query: str = ""
+        self._asset_type: str = "model"
+        self._results: list[dict[str, Any]] = []
+        self._total: int = 0
+        self._next_url: str = ""  # cursor URL for next page
+        self._loading: bool = False
+        self._free_only: bool = False
+        self._quality_limit: int = 0
+        self._license_filter: str = "ANY"
+        self._animated_only: bool = False
+        self._texture_res_min: int = 0
+        self._texture_res_max: int = 0
+        self._file_size_min: int = 0
+        self._file_size_max: int = 0
+        self._poly_count_min: int = 0
+        self._poly_count_max: int = 0
+        self._style: str = "ANY"
+        self._condition: str = "UNSPECIFIED"
+        self._design_year_min: int = 0
+        self._design_year_max: int = 0
+        self._geometry_nodes: bool = False
+        self._extra_filters: dict[str, Any] = {}
 
-        self._tiles:     list[AssetTile] = []
+        self._tiles: list[AssetTile] = []
         self._next_fill: int = 0
 
-        self._cols:    int = 4
+        self._cols: int = 4
         self._last_vw: int = 0
 
         self._reflow_timer = QTimer()
@@ -888,7 +894,7 @@ class AssetGrid(QWidget):
             return
         vw = self._scroll.viewport().width() or self.width()
         if vw >= 32:
-            self._cols    = self._cols_for_width(vw)
+            self._cols = self._cols_for_width(vw)
             self._last_vw = vw
         self._container.reflow(self._tiles, self._cols, self._tile_w())
 
@@ -900,7 +906,7 @@ class AssetGrid(QWidget):
         _check_scroll_threshold; this handler only fires on real scrolling.
         """
         bar = self._scroll.verticalScrollBar()
-        mx  = bar.maximum()
+        mx = bar.maximum()
         if mx == 0:
             return  # no scrollbar yet — auto-fill is not this handler's job
         more = (self._total == 0) or (len(self._results) < self._total)
@@ -915,32 +921,31 @@ class AssetGrid(QWidget):
         if not self._results:
             return
         self._loading = True
-        log.debug("Loading next page, offset=%d next_url=%r",
-                  len(self._results), self._next_url or "(none)")
+        log.debug("Loading next page, offset=%d next_url=%r", len(self._results), self._next_url or "(none)")
         self._add_placeholders(PAGE_SIZE)
         bk_search.search(
-            query           = self._query,
-            asset_type      = self._asset_type,
-            free_only       = self._free_only,
-            quality_limit   = self._quality_limit,
-            license_filter  = self._license_filter,
-            animated_only   = self._animated_only,
-            texture_res_min = self._texture_res_min,
-            texture_res_max = self._texture_res_max,
-            file_size_min   = self._file_size_min,
-            file_size_max   = self._file_size_max,
-            poly_count_min  = self._poly_count_min,
-            poly_count_max  = self._poly_count_max,
-            style           = self._style,
-            condition       = self._condition,
-            design_year_min = self._design_year_min,
-            design_year_max = self._design_year_max,
-            geometry_nodes  = self._geometry_nodes,
-            page_size       = PAGE_SIZE,
-            next_url        = self._next_url,
-            extra_filters   = self._extra_filters or None,
-            on_results      = self._bridge.results_ready.emit,
-            on_error        = self._bridge.error_occurred.emit,
+            query=self._query,
+            asset_type=self._asset_type,
+            free_only=self._free_only,
+            quality_limit=self._quality_limit,
+            license_filter=self._license_filter,
+            animated_only=self._animated_only,
+            texture_res_min=self._texture_res_min,
+            texture_res_max=self._texture_res_max,
+            file_size_min=self._file_size_min,
+            file_size_max=self._file_size_max,
+            poly_count_min=self._poly_count_min,
+            poly_count_max=self._poly_count_max,
+            style=self._style,
+            condition=self._condition,
+            design_year_min=self._design_year_min,
+            design_year_max=self._design_year_max,
+            geometry_nodes=self._geometry_nodes,
+            page_size=PAGE_SIZE,
+            next_url=self._next_url,
+            extra_filters=self._extra_filters or None,
+            on_results=self._bridge.results_ready.emit,
+            on_error=self._bridge.error_occurred.emit,
         )
 
     # ── Placeholder management ────────────────────────────────────────────
@@ -964,86 +969,95 @@ class AssetGrid(QWidget):
 
     def start_search(
         self,
-        query:           str,
-        asset_type:      str,
-        free_only:       bool = False,
-        quality_limit:   int  = 0,
-        license_filter:  str  = "ANY",
-        animated_only:   bool = False,
-        texture_res_min: int  = 0,
-        texture_res_max: int  = 0,
-        file_size_min:   int  = 0,
-        file_size_max:   int  = 0,
-        poly_count_min:  int  = 0,
-        poly_count_max:  int  = 0,
-        style:           str  = "ANY",
-        condition:       str  = "UNSPECIFIED",
-        design_year_min: int  = 0,
-        design_year_max: int  = 0,
-        geometry_nodes:  bool = False,
+        query: str,
+        asset_type: str,
+        free_only: bool = False,
+        quality_limit: int = 0,
+        license_filter: str = "ANY",
+        animated_only: bool = False,
+        texture_res_min: int = 0,
+        texture_res_max: int = 0,
+        file_size_min: int = 0,
+        file_size_max: int = 0,
+        poly_count_min: int = 0,
+        poly_count_max: int = 0,
+        style: str = "ANY",
+        condition: str = "UNSPECIFIED",
+        design_year_min: int = 0,
+        design_year_max: int = 0,
+        geometry_nodes: bool = False,
     ) -> None:
-        self._query           = query
-        self._asset_type      = asset_type
-        self._free_only       = free_only
-        self._quality_limit   = quality_limit
-        self._license_filter  = license_filter
-        self._animated_only   = animated_only
+        self._query = query
+        self._asset_type = asset_type
+        self._free_only = free_only
+        self._quality_limit = quality_limit
+        self._license_filter = license_filter
+        self._animated_only = animated_only
         self._texture_res_min = texture_res_min
         self._texture_res_max = texture_res_max
-        self._file_size_min   = file_size_min
-        self._file_size_max   = file_size_max
-        self._poly_count_min  = poly_count_min
-        self._poly_count_max  = poly_count_max
-        self._style           = style
-        self._condition       = condition
+        self._file_size_min = file_size_min
+        self._file_size_max = file_size_max
+        self._poly_count_min = poly_count_min
+        self._poly_count_max = poly_count_max
+        self._style = style
+        self._condition = condition
         self._design_year_min = design_year_min
         self._design_year_max = design_year_max
-        self._geometry_nodes  = geometry_nodes
-        self._results   = []
-        self._total     = 0
-        self._next_url  = ""
-        self._loading   = True
+        self._geometry_nodes = geometry_nodes
+        self._results = []
+        self._total = 0
+        self._next_url = ""
+        self._loading = True
         self._next_fill = 0
         self._clear_tiles()
 
         log.debug(
             "start_search query=%r type=%s free=%s quality=%d license=%s animated=%s "
             "tex_res=%d-%d file_size=%d-%d poly=%d-%d",
-            query, asset_type, free_only, quality_limit, license_filter, animated_only,
-            texture_res_min, texture_res_max, file_size_min, file_size_max,
-            poly_count_min, poly_count_max
+            query,
+            asset_type,
+            free_only,
+            quality_limit,
+            license_filter,
+            animated_only,
+            texture_res_min,
+            texture_res_max,
+            file_size_min,
+            file_size_max,
+            poly_count_min,
+            poly_count_max,
         )
 
         vw = self._scroll.viewport().width() or self.width()
         if vw >= 32:
-            self._cols    = self._cols_for_width(vw)
+            self._cols = self._cols_for_width(vw)
             self._last_vw = vw
 
         self._stack.setCurrentIndex(0)
         self._add_placeholders(PAGE_SIZE)
 
         bk_search.search(
-            query           = query,
-            asset_type      = asset_type,
-            free_only       = free_only,
-            quality_limit   = quality_limit,
-            license_filter  = license_filter,
-            animated_only   = animated_only,
-            texture_res_min = texture_res_min,
-            texture_res_max = texture_res_max,
-            file_size_min   = file_size_min,
-            file_size_max   = file_size_max,
-            poly_count_min  = poly_count_min,
-            poly_count_max  = poly_count_max,
-            style           = style,
-            condition       = condition,
-            design_year_min = design_year_min,
-            design_year_max = design_year_max,
-            geometry_nodes  = geometry_nodes,
-            page_size       = PAGE_SIZE,
-            extra_filters   = self._extra_filters or None,
-            on_results      = self._bridge.results_ready.emit,
-            on_error        = self._bridge.error_occurred.emit,
+            query=query,
+            asset_type=asset_type,
+            free_only=free_only,
+            quality_limit=quality_limit,
+            license_filter=license_filter,
+            animated_only=animated_only,
+            texture_res_min=texture_res_min,
+            texture_res_max=texture_res_max,
+            file_size_min=file_size_min,
+            file_size_max=file_size_max,
+            poly_count_min=poly_count_min,
+            poly_count_max=poly_count_max,
+            style=style,
+            condition=condition,
+            design_year_min=design_year_min,
+            design_year_max=design_year_max,
+            geometry_nodes=geometry_nodes,
+            page_size=PAGE_SIZE,
+            extra_filters=self._extra_filters or None,
+            on_results=self._bridge.results_ready.emit,
+            on_error=self._bridge.error_occurred.emit,
         )
 
     def set_tile_size(self, size: int) -> None:
@@ -1063,7 +1077,7 @@ class AssetGrid(QWidget):
             tile.hide()
             tile.deleteLater()
         self._tiles.clear()
-        self._next_fill   = 0
+        self._next_fill = 0
         self._container.setFixedHeight(8)
 
     def _set_status(self, text: str) -> None:
@@ -1071,11 +1085,10 @@ class AssetGrid(QWidget):
         self._stack.setCurrentIndex(1)
 
     def _on_results(self, results: list[dict[str, Any]], total: int, next_url: str) -> None:
-        self._loading   = False
-        self._total     = total
-        self._next_url  = next_url or ""
-        log.debug("_on_results count=%d total=%d next=%r",
-                  len(results), total, self._next_url or "(none)")
+        self._loading = False
+        self._total = total
+        self._next_url = next_url or ""
+        log.debug("_on_results count=%d total=%d next=%r", len(results), total, self._next_url or "(none)")
 
         if not results:
             if not self._results:
@@ -1090,7 +1103,7 @@ class AssetGrid(QWidget):
         if not self._results:
             vw = self._scroll.viewport().width()
             if vw >= 32 and vw != self._last_vw:
-                self._cols    = self._cols_for_width(vw)
+                self._cols = self._cols_for_width(vw)
                 self._last_vw = vw
                 self._container.reflow(self._tiles, self._cols, self._tile_w())
 
@@ -1127,8 +1140,8 @@ class AssetGrid(QWidget):
         page the Qt event loop settles, max is recomputed, and if the
         viewport is still not full we immediately kick off another page.
         """
-        bar  = self._scroll.verticalScrollBar()
-        mx   = bar.maximum()
+        bar = self._scroll.verticalScrollBar()
+        mx = bar.maximum()
         more = (self._total == 0) or (len(self._results) < self._total)
 
         if more and (mx == 0 or bar.value() >= mx * 0.80):
@@ -1138,6 +1151,7 @@ class AssetGrid(QWidget):
 # ---------------------------------------------------------------------------
 # Search bar  (query input + asset-type pills)
 # ---------------------------------------------------------------------------
+
 
 class SearchBar(QWidget):
     search_requested = Signal(str, str)
@@ -1183,12 +1197,10 @@ class SearchBar(QWidget):
         pills_row.addStretch()
         layout.addLayout(pills_row)
         # Switching tabs immediately fires a new search
-        self._pill_group.buttonToggled.connect(
-            lambda btn, checked: self._emit() if checked else None
-        )
+        self._pill_group.buttonToggled.connect(lambda btn, checked: self._emit() if checked else None)
 
     def _emit(self) -> None:
-        checked    = self._pill_group.checkedButton()
+        checked = self._pill_group.checkedButton()
         asset_type = checked.property("asset_type") if checked else "model"
         self.search_requested.emit(self._input.text().strip(), asset_type)
 
@@ -1205,6 +1217,7 @@ class SearchBar(QWidget):
 # ---------------------------------------------------------------------------
 # Filters panel  (collapsible)
 # ---------------------------------------------------------------------------
+
 
 class _FiltersPanel(QWidget):
     filters_changed = Signal()
@@ -1405,7 +1418,8 @@ class _FiltersPanel(QWidget):
         # Restore from prefs by API value
         for i, (api_v, _) in enumerate(self._STYLE_LABELS):
             if api_v == (prefs.search_style or "ANY"):
-                self._style.setCurrentIndex(i); break
+                self._style.setCurrentIndex(i)
+                break
         self._style.setFixedWidth(110)
         self._style.currentIndexChanged.connect(self._schedule)
         style_row.addWidget(self._style)
@@ -1419,16 +1433,17 @@ class _FiltersPanel(QWidget):
         self._condition = QComboBox()
         self._COND_LABELS = [
             ("UNSPECIFIED", "Any"),
-            ("NEW",        "New"),
-            ("USED",       "Used"),
-            ("OLD",        "Old"),
-            ("DESOLATE",   "Desolate"),
+            ("NEW", "New"),
+            ("USED", "Used"),
+            ("OLD", "Old"),
+            ("DESOLATE", "Desolate"),
         ]
         for _api, _lbl in self._COND_LABELS:
             self._condition.addItem(_lbl, _api)
         for i, (api_v, _) in enumerate(self._COND_LABELS):
             if api_v == (prefs.search_condition or "UNSPECIFIED"):
-                self._condition.setCurrentIndex(i); break
+                self._condition.setCurrentIndex(i)
+                break
         self._condition.setFixedWidth(110)
         self._condition.currentIndexChanged.connect(self._schedule)
         cond_row.addWidget(self._condition)
@@ -1479,25 +1494,25 @@ class _FiltersPanel(QWidget):
         self._body.setVisible(checked)
 
     def _schedule(self) -> None:
-        prefs.search_free_only              = self._free_only.isChecked()
-        prefs.search_quality_limit          = self._quality_limit.value() if self._quality_check.isChecked() else 0
-        prefs.search_license                = self._license_to_api(self._license.currentText())
-        prefs.search_animated_only          = self._animated_only.isChecked()
-        prefs.search_texture_resolution     = self._tex_filter.isChecked()
+        prefs.search_free_only = self._free_only.isChecked()
+        prefs.search_quality_limit = self._quality_limit.value() if self._quality_check.isChecked() else 0
+        prefs.search_license = self._license_to_api(self._license.currentText())
+        prefs.search_animated_only = self._animated_only.isChecked()
+        prefs.search_texture_resolution = self._tex_filter.isChecked()
         prefs.search_texture_resolution_min = self._tex_min.value()
         prefs.search_texture_resolution_max = self._tex_max.value()
-        prefs.search_poly_count             = self._poly_filter.isChecked()
-        prefs.search_poly_count_min         = self._poly_min.value() * 1000
-        prefs.search_poly_count_max         = self._poly_max.value() * 1000
-        prefs.search_file_size              = self._fsize_filter.isChecked()
-        prefs.search_file_size_min          = self._fsize_min.value()
-        prefs.search_file_size_max          = self._fsize_max.value()
-        prefs.search_style                  = self._style.currentData() or "ANY"
-        prefs.search_condition              = self._condition.currentData() or "UNSPECIFIED"
-        prefs.search_design_year            = self._dyear_filter.isChecked()
-        prefs.search_design_year_min        = self._dyear_min.value()
-        prefs.search_design_year_max        = self._dyear_max.value()
-        prefs.search_geometry_nodes         = self._geo_nodes.isChecked()
+        prefs.search_poly_count = self._poly_filter.isChecked()
+        prefs.search_poly_count_min = self._poly_min.value() * 1000
+        prefs.search_poly_count_max = self._poly_max.value() * 1000
+        prefs.search_file_size = self._fsize_filter.isChecked()
+        prefs.search_file_size_min = self._fsize_min.value()
+        prefs.search_file_size_max = self._fsize_max.value()
+        prefs.search_style = self._style.currentData() or "ANY"
+        prefs.search_condition = self._condition.currentData() or "UNSPECIFIED"
+        prefs.search_design_year = self._dyear_filter.isChecked()
+        prefs.search_design_year_min = self._dyear_min.value()
+        prefs.search_design_year_max = self._dyear_max.value()
+        prefs.search_geometry_nodes = self._geo_nodes.isChecked()
         self._debounce.start()
 
     @staticmethod
@@ -1592,6 +1607,7 @@ class _FiltersPanel(QWidget):
 # ---------------------------------------------------------------------------
 # Login banner  (logo + message + button)
 # ---------------------------------------------------------------------------
+
 
 class _LoginBanner(QWidget):
     """Status banner shown at the top of the asset bar.
@@ -1689,6 +1705,7 @@ class _LoginBanner(QWidget):
 # Main panel widget
 # ---------------------------------------------------------------------------
 
+
 class _BrandHeader(QWidget):
     """Blue title strip with the BlenderKit logo, shown at the very top of
     the asset bar.  Always visible — it survives Maya redocking and floating
@@ -1703,7 +1720,7 @@ class _BrandHeader(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
             "QWidget#BKBrandHeader {"
-            "  background-color: #2a6bd6;"   # BlenderKit blue
+            "  background-color: #2a6bd6;"  # BlenderKit blue
             "  border-bottom: 1px solid #1d4f9e;"
             "}"
             "QLabel#BKBrandText {"
@@ -1723,7 +1740,7 @@ class _BrandHeader(QWidget):
             pix = bk_icons.logo_pixmap(24)
             if pix and not pix.isNull():
                 logo.setPixmap(pix)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         row.addWidget(logo)
 
@@ -1734,7 +1751,6 @@ class _BrandHeader(QWidget):
 
 
 class AssetBarWidget(QWidget):
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("BlenderKit")
@@ -1787,7 +1803,7 @@ class AssetBarWidget(QWidget):
         def _run() -> None:
             try:
                 ok = auth.login()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.exception("Login raised: %s", exc)
                 ok = False
                 err = str(exc)
@@ -1811,16 +1827,18 @@ class AssetBarWidget(QWidget):
     def _open_settings(self) -> None:
         try:
             from .settings_dialog import open_settings
+
             open_settings(tab="Account")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error("Cannot open settings dialog: %s", exc)
 
     def _show_logs(self) -> None:
         # Open Maya's Script Editor — the simplest "show logs" surface
         try:
             import maya.cmds as cmds  # type: ignore[import-not-found]
+
             cmds.ScriptEditor()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Cannot open Maya Script Editor: %s", exc)
 
     def _dismiss_banner(self) -> None:
@@ -1839,92 +1857,92 @@ class AssetBarWidget(QWidget):
         # (such as the author filter set by "Search by author").
         self._grid.set_extra_filters(None)
         self._grid.start_search(
-            query, asset_type,
-            free_only       = self._filters.free_only,
-            quality_limit   = self._filters.quality_limit,
-            license_filter  = self._filters.license_filter,
-            animated_only   = self._filters.animated_only,
-            texture_res_min = self._filters.tex_res_min,
-            texture_res_max = self._filters.tex_res_max,
-            file_size_min   = self._filters.file_size_min,
-            file_size_max   = self._filters.file_size_max,
-            poly_count_min  = self._filters.poly_count_min,
-            poly_count_max  = self._filters.poly_count_max,
-            style           = self._filters.model_style,
-            condition       = self._filters.condition,
-            design_year_min = self._filters.design_year_min,
-            design_year_max = self._filters.design_year_max,
-            geometry_nodes  = self._filters.geometry_nodes,
+            query,
+            asset_type,
+            free_only=self._filters.free_only,
+            quality_limit=self._filters.quality_limit,
+            license_filter=self._filters.license_filter,
+            animated_only=self._filters.animated_only,
+            texture_res_min=self._filters.tex_res_min,
+            texture_res_max=self._filters.tex_res_max,
+            file_size_min=self._filters.file_size_min,
+            file_size_max=self._filters.file_size_max,
+            poly_count_min=self._filters.poly_count_min,
+            poly_count_max=self._filters.poly_count_max,
+            style=self._filters.model_style,
+            condition=self._filters.condition,
+            design_year_min=self._filters.design_year_min,
+            design_year_max=self._filters.design_year_max,
+            geometry_nodes=self._filters.geometry_nodes,
         )
 
     def _on_filters_changed(self) -> None:
         self._grid.start_search(
             self._search_bar.current_query,
             self._search_bar.current_asset_type,
-            free_only       = self._filters.free_only,
-            quality_limit   = self._filters.quality_limit,
-            license_filter  = self._filters.license_filter,
-            animated_only   = self._filters.animated_only,
-            texture_res_min = self._filters.tex_res_min,
-            texture_res_max = self._filters.tex_res_max,
-            file_size_min   = self._filters.file_size_min,
-            file_size_max   = self._filters.file_size_max,
-            poly_count_min  = self._filters.poly_count_min,
-            poly_count_max  = self._filters.poly_count_max,
-            style           = self._filters.model_style,
-            condition       = self._filters.condition,
-            design_year_min = self._filters.design_year_min,
-            design_year_max = self._filters.design_year_max,
-            geometry_nodes  = self._filters.geometry_nodes,
+            free_only=self._filters.free_only,
+            quality_limit=self._filters.quality_limit,
+            license_filter=self._filters.license_filter,
+            animated_only=self._filters.animated_only,
+            texture_res_min=self._filters.tex_res_min,
+            texture_res_max=self._filters.tex_res_max,
+            file_size_min=self._filters.file_size_min,
+            file_size_max=self._filters.file_size_max,
+            poly_count_min=self._filters.poly_count_min,
+            poly_count_max=self._filters.poly_count_max,
+            style=self._filters.model_style,
+            condition=self._filters.condition,
+            design_year_min=self._filters.design_year_min,
+            design_year_max=self._filters.design_year_max,
+            geometry_nodes=self._filters.geometry_nodes,
         )
 
     def _default_search(self) -> None:
         self._grid.start_search(
             "",
             self._search_bar.current_asset_type,
-            free_only       = self._filters.free_only,
-            quality_limit   = self._filters.quality_limit,
-            license_filter  = self._filters.license_filter,
-            animated_only   = self._filters.animated_only,
-            texture_res_min = self._filters.tex_res_min,
-            texture_res_max = self._filters.tex_res_max,
-            file_size_min   = self._filters.file_size_min,
-            file_size_max   = self._filters.file_size_max,
-            poly_count_min  = self._filters.poly_count_min,
-            poly_count_max  = self._filters.poly_count_max,
-            style           = self._filters.model_style,
-            condition       = self._filters.condition,
-            design_year_min = self._filters.design_year_min,
-            design_year_max = self._filters.design_year_max,
-            geometry_nodes  = self._filters.geometry_nodes,
+            free_only=self._filters.free_only,
+            quality_limit=self._filters.quality_limit,
+            license_filter=self._filters.license_filter,
+            animated_only=self._filters.animated_only,
+            texture_res_min=self._filters.tex_res_min,
+            texture_res_max=self._filters.tex_res_max,
+            file_size_min=self._filters.file_size_min,
+            file_size_max=self._filters.file_size_max,
+            poly_count_min=self._filters.poly_count_min,
+            poly_count_max=self._filters.poly_count_max,
+            style=self._filters.model_style,
+            condition=self._filters.condition,
+            design_year_min=self._filters.design_year_min,
+            design_year_max=self._filters.design_year_max,
+            geometry_nodes=self._filters.geometry_nodes,
         )
-
 
     def search_by_author(self, author_id: int, author_name: str = "") -> None:
         """Reset the search bar and show only assets by the given author."""
         try:
-            self._search_bar._input.clear()  # noqa: SLF001
+            self._search_bar._input.clear()
         except Exception:
             pass
         self._grid.set_extra_filters({"author_id": author_id})
         self._grid.start_search(
             "",
             self._search_bar.current_asset_type,
-            free_only       = self._filters.free_only,
-            quality_limit   = self._filters.quality_limit,
-            license_filter  = self._filters.license_filter,
-            animated_only   = self._filters.animated_only,
-            texture_res_min = self._filters.tex_res_min,
-            texture_res_max = self._filters.tex_res_max,
-            file_size_min   = self._filters.file_size_min,
-            file_size_max   = self._filters.file_size_max,
-            poly_count_min  = self._filters.poly_count_min,
-            poly_count_max  = self._filters.poly_count_max,
-            style           = self._filters.model_style,
-            condition       = self._filters.condition,
-            design_year_min = self._filters.design_year_min,
-            design_year_max = self._filters.design_year_max,
-            geometry_nodes  = self._filters.geometry_nodes,
+            free_only=self._filters.free_only,
+            quality_limit=self._filters.quality_limit,
+            license_filter=self._filters.license_filter,
+            animated_only=self._filters.animated_only,
+            texture_res_min=self._filters.tex_res_min,
+            texture_res_max=self._filters.tex_res_max,
+            file_size_min=self._filters.file_size_min,
+            file_size_max=self._filters.file_size_max,
+            poly_count_min=self._filters.poly_count_min,
+            poly_count_max=self._filters.poly_count_max,
+            style=self._filters.model_style,
+            condition=self._filters.condition,
+            design_year_min=self._filters.design_year_min,
+            design_year_max=self._filters.design_year_max,
+            geometry_nodes=self._filters.geometry_nodes,
         )
         log.info("Search-by-author: id=%s name=%r", author_id, author_name)
 
@@ -1933,11 +1951,15 @@ class AssetBarWidget(QWidget):
 # Maya integration
 # ---------------------------------------------------------------------------
 
+
 def open_asset_bar() -> None:
     """Create or restore the BlenderKit side panel (docked by default)."""
     if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
         cmds.workspaceControl(
-            CONTROL_NAME, edit=True, restore=True, visible=True,
+            CONTROL_NAME,
+            edit=True,
+            restore=True,
+            visible=True,
         )
         return
 
@@ -1947,25 +1969,22 @@ def open_asset_bar() -> None:
         try:
             if cmds.workspaceControl(legacy, query=True, exists=True):
                 cmds.deleteUI(legacy, control=True)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # Allow the panel to be closed via the X button or panel close.
-    kw: dict = dict(
-        label        = "BlenderKit",
-        uiScript     = (
-            "import bk_maya.ui.asset_bar as _ab; "
-            "_ab._populate_workspace_control()"
-        ),
-        initialWidth = 340,
-        retain       = True,
+    kw = {
+        "label": "BlenderKit",
+        "uiScript": ("import bk_maya.ui.asset_bar as _ab; _ab._populate_workspace_control()"),
+        "initialWidth": 340,
+        "retain": True,
         # No closeCommand: allow normal close
-    )
+    }
 
     try:
         if cmds.workspaceControl("AttributeEditor", query=True, exists=True):
             kw["tabToControl"] = ("AttributeEditor", -1)
-            kw["floating"]     = False
+            kw["floating"] = False
     except Exception:
         kw["floating"] = True
 
@@ -2003,8 +2022,8 @@ def _populate_workspace_control() -> None:
     """Called by Maya's uiScript when the workspaceControl is created."""
     global _current_bar
     try:
-        from maya.OpenMayaUI import MQtUtil   # type: ignore
-        import shiboken6                       # type: ignore
+        import shiboken6  # type: ignore
+        from maya.OpenMayaUI import MQtUtil  # type: ignore
     except ImportError:
         log.error("shiboken6 not available — cannot embed Qt widget.")
         return

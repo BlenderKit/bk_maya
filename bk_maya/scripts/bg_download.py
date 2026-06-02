@@ -1,4 +1,4 @@
-﻿"""BlenderKit Maya â€” background Blender script.
+"""BlenderKit Maya â€” background Blender script.
 
 Executed inside ``blender --background --python <this> -- <args.json>``.
 
@@ -22,17 +22,15 @@ import json
 import os
 import sys
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
 import uuid
-
-import bpy  # type: ignore[import-not-found]
-
 
 # ---------------------------------------------------------------------------
 # Stdout protocol helpers
 # ---------------------------------------------------------------------------
+
 
 def emit(tag: str, *parts: object) -> None:
     msg = " ".join(str(p) for p in parts)
@@ -66,7 +64,7 @@ def log_line(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 _RES_TO_FILETYPE = {
-    "512":  "resolution_0_5K",
+    "512": "resolution_0_5K",
     "1024": "resolution_1K",
     "2048": "resolution_2K",
     "4096": "resolution_4K",
@@ -89,7 +87,7 @@ def pick_download_url(asset_data: dict, max_resolution: str) -> tuple[str, str]:
     if max_resolution != "ORIGINAL" and max_resolution in _RES_TO_FILETYPE:
         # try requested + smaller, in descending order
         cutoff = _RES_ORDER.index(max_resolution)
-        candidates = [_RES_TO_FILETYPE[r] for r in reversed(_RES_ORDER[:cutoff + 1])]
+        candidates = [_RES_TO_FILETYPE[r] for r in reversed(_RES_ORDER[: cutoff + 1])]
     # Always allow original blend as final fallback
     candidates.append("blend")
 
@@ -139,8 +137,7 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
 
     if not api_key:
         raise RuntimeError(
-            "Authentication required for signed download URL â€” please log in "
-            "to BlenderKit in Maya first."
+            "Authentication required for signed download URL â€” please log in to BlenderKit in Maya first."
         )
 
     sep = "&" if "?" in api_url else "?"
@@ -156,26 +153,19 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             ctype = resp.headers.get("Content-Type", "")
-            log_line(
-                f"resolve_signed_url: status={resp.status} content-type={ctype} "
-                f"body-prefix={raw[:200]!r}"
-            )
+            log_line(f"resolve_signed_url: status={resp.status} content-type={ctype} body-prefix={raw[:200]!r}")
     except urllib.error.HTTPError as exc:
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        raise RuntimeError(
-            f"signed URL request returned HTTP {exc.code} {exc.reason} â€” body: {body}"
-        ) from exc
+        raise RuntimeError(f"signed URL request returned HTTP {exc.code} {exc.reason} â€” body: {body}") from exc
 
     try:
         body = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"signed URL response was not JSON: {raw[:200]!r}"
-        ) from exc
+        raise RuntimeError(f"signed URL response was not JSON: {raw[:200]!r}") from exc
 
     signed = body.get("filePath") or ""
     if not signed:
@@ -237,6 +227,7 @@ def download_file(url: str, dest_path: str, *, api_key: str = "") -> None:
 # Delegate Blend → USD export to client/tools/export_usd.py
 # ---------------------------------------------------------------------------
 
+
 def _find_export_usd_script(args: dict) -> str:
     """Locate ``export_usd.py`` shipped under ``client/tools/``.
 
@@ -266,8 +257,7 @@ def _find_export_usd_script(args: dict) -> str:
         if c and os.path.isfile(c):
             return c
     raise RuntimeError(
-        f"export_usd.py not found. Tried: {candidates}. "
-        "Set BLENDERKIT_TOOLS_DIR or pass export_usd_script in args."
+        f"export_usd.py not found. Tried: {candidates}. Set BLENDERKIT_TOOLS_DIR or pass export_usd_script in args."
     )
 
 
@@ -284,8 +274,8 @@ def run_export_usd(args: dict, blend_path: str, out_usd: str) -> None:
 
     # Build params JSON next to the .blend so the recipe can pick it up.
     params = {
-        "blend_path":     blend_path,
-        "out_usd":        out_usd,
+        "blend_path": blend_path,
+        "out_usd": out_usd,
         "max_resolution": args.get("max_resolution", ""),
     }
     params_path = os.path.join(os.path.dirname(blend_path) or ".", "_export_usd_params.json")
@@ -300,10 +290,10 @@ def run_export_usd(args: dict, blend_path: str, out_usd: str) -> None:
         with open(script_path, encoding="utf-8") as fh:
             code = compile(fh.read(), script_path, "exec")
         try:
-            exec(code, ns)
+            exec(code, ns)  # noqa: S102 - running a trusted recipe script in-process
         except SystemExit as ex:
             if ex.code not in (None, 0):
-                raise RuntimeError(f"export_usd.py exited with code {ex.code}")
+                raise RuntimeError(f"export_usd.py exited with code {ex.code}") from ex
     finally:
         sys.argv = saved_argv
         try:
@@ -316,10 +306,11 @@ def run_export_usd(args: dict, blend_path: str, out_usd: str) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> dict:
     if "--" not in sys.argv:
         raise RuntimeError("No '--' separator found in argv.")
-    args = sys.argv[sys.argv.index("--") + 1:]
+    args = sys.argv[sys.argv.index("--") + 1 :]
     if not args:
         raise RuntimeError("Missing args JSON path.")
     with open(args[0], encoding="utf-8") as fh:
@@ -333,16 +324,16 @@ def main() -> int:
         error(f"argument parsing failed: {exc}")
         return 2
 
-    asset_data     = args.get("asset_data") or {}
+    asset_data = args.get("asset_data") or {}
     max_resolution = args.get("max_resolution", "2048")
     # Accept either ``out_usd`` (new) or ``out_glb`` (legacy) so we don't
     # break older Maya-side callers during the switchover.
-    out_usd        = args.get("out_usd") or args.get("out_glb", "")
-    api_key        = args.get("api_key", "")
-    work_dir       = args.get("work_dir") or os.path.dirname(out_usd) or "."
+    out_usd = args.get("out_usd") or args.get("out_glb", "")
+    api_key = args.get("api_key", "")
+    work_dir = args.get("work_dir") or os.path.dirname(out_usd) or "."
     # Maya-side computes the exact cache path so re-drops hit the existing
     # .blend instead of triggering a re-download.
-    blend_path     = args.get("blend_path") or ""
+    blend_path = args.get("blend_path") or ""
 
     progress(0.0, "starting")
 
