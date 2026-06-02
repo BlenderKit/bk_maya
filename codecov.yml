@@ -3,5 +3,3 @@ coverage:
     project: off
     patch: off
 comment: false
-fixes:
-  - "/home/runner/.config/blender/*/scripts/addons/::"

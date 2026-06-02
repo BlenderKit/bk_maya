@@ -48,12 +48,12 @@ def ensure_gltf_addon():
 
     try:
         import addon_utils
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # No addon_utils means we're inside something that's not real
         # Blender — bail with a clear error instead of carrying on.
         raise RuntimeError(
-            f"export_glb: addon_utils unavailable ({exc!r}); cannot enable glTF addon."
-        )
+            f"export_glb: addon_utils unavailable ({exc!r}); cannot enable glTF addon.",
+        ) from exc
 
     # 1) Discover by scanning installed modules. Survives the
     #    addon→extension rename without us tracking module paths.
@@ -66,7 +66,7 @@ def ensure_gltf_addon():
                 continue
             try:
                 info = addon_utils.module_bl_info(mod) or {}
-            except Exception:  # noqa: BLE001
+            except Exception:
                 info = {}
             name = (info.get("name") or "").lower()
             cat = (info.get("category") or "").lower()
@@ -76,7 +76,7 @@ def ensure_gltf_addon():
             if "gltf" in name or ("import-export" in cat and "gltf" in modname.lower()):
                 candidates.append(modname)
                 seen.add(modname)
-    except Exception as scan_exc:  # noqa: BLE001
+    except Exception as scan_exc:
         print(
             f"export_glb: addon_utils scan failed ({scan_exc!r}); falling back to known names.",
             file=sys.stderr,
@@ -99,7 +99,7 @@ def ensure_gltf_addon():
     for module in candidates:
         try:
             mod = addon_utils.enable(module, default_set=True, persistent=True)
-        except Exception as exc:  # noqa: BLE001 - Blender raises mixed types
+        except Exception as exc:
             last_err = exc
             continue
         if mod is None:
@@ -109,7 +109,7 @@ def ensure_gltf_addon():
             print(f"export_glb: enabled glTF addon ({module})")
             try:
                 bpy.ops.wm.save_userpref()
-            except Exception as save_exc:  # noqa: BLE001
+            except Exception as save_exc:
                 # Headless / read-only-prefs runs can't persist; the
                 # in-process enable is still enough for THIS export.
                 print(
@@ -119,8 +119,7 @@ def ensure_gltf_addon():
             return
 
     raise RuntimeError(
-        "export_glb: could not enable glTF addon. "
-        f"tried_candidates={candidates} last_err={last_err!r}"
+        f"export_glb: could not enable glTF addon. tried_candidates={candidates} last_err={last_err!r}",
     )
 
 
@@ -133,7 +132,7 @@ if not argv:
     print("export_glb: no params.json path given after --", file=sys.stderr)
     sys.exit(2)
 
-with open(argv[-1], "r", encoding="utf-8") as fh:
+with open(argv[-1], encoding="utf-8") as fh:
     params = json.load(fh)
 
 ensure_gltf_addon()

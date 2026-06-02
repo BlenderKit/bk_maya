@@ -41,7 +41,7 @@ def _ensure_paths() -> None:
 def _add_shelf_button() -> None:
     """Add a BlenderKit button to the active Maya shelf."""
     import maya.cmds as cmds  # type: ignore
-    import maya.mel as mel   # type: ignore
+    import maya.mel as mel  # type: ignore
 
     # Ensure there's a shelf to add to
     top_shelf = mel.eval("$tmpVar=$gShelfTopLevel")

@@ -30,13 +30,13 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import global_vars
 from . import prefs as _prefs_mod
@@ -161,7 +161,7 @@ def _sources_newer_than(binary_path: str) -> bool:
         if os.path.basename(root).startswith("v"):
             continue
         for f in files:
-            if f.endswith((".go", ".mod", ".sum")):
+            if f.endswith((".go", ".mod", ".sum")):  # noqa: SIM102
                 if os.path.getmtime(os.path.join(root, f)) > bin_mtime:
                     return True
     return False
@@ -198,7 +198,7 @@ def _maybe_dev_build() -> None:
     os.makedirs(os.path.dirname(binary_path), exist_ok=True)
     log.info("BLENDERKIT_DEV=1: building client (%s/%s) → %s", goos, goarch, binary_path)
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: PLW1510
             ["go", "build", "-o", binary_path, "-ldflags", ldflags, "."],
             env=env,
             cwd=src_dir,
@@ -248,7 +248,7 @@ def _ensure_client_binary_installed() -> str:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
             if sys.platform != "win32":
-                os.chmod(dst, 0o755)
+                os.chmod(dst, 0o755)  # noqa: S103
             log.info("Installed BlenderKit client to %s", dst)
         return dst
     except OSError as exc:
@@ -344,7 +344,7 @@ def _spawn(port: str) -> subprocess.Popen:
     p = _prefs_mod.prefs
     ssl_context = "DISABLED" if not getattr(p, "ssl_verification", True) else ""
 
-    log_file = open(_log_path(), "ab")
+    log_file = open(_log_path(), "ab")  # noqa: SIM115
     args = [
         binary,
         "--port", port,
@@ -676,7 +676,8 @@ class _ThumbRegistry:
 
     def register(self, asset_base_id: str, cb: Callable[[str], None]) -> None:
         """Register *cb*. If a path was already delivered for this id, fire
-        *cb* immediately and drop the registration."""
+        *cb* immediately and drop the registration.
+        """
         if not asset_base_id:
             return
         with self._lock:
@@ -702,7 +703,8 @@ class _ThumbRegistry:
 
     def deliver(self, asset_base_id: str, path: str) -> Callable[[str], None] | None:
         """Record *path* for *asset_base_id* and return the callback (if any)
-        that the dispatcher should invoke."""
+        that the dispatcher should invoke.
+        """
         with self._lock:
             self._cached[asset_base_id] = path
             return self._cbs.pop(asset_base_id, None)

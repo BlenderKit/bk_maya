@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..api import client as api
-from . import auth, client_lib, prefs as _prefs_mod
+from . import auth, client_lib
+from . import prefs as _prefs_mod
 
 log = logging.getLogger(__name__)
 

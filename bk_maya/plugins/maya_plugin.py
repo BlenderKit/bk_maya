@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import threading
 
 import maya.api.OpenMaya as om2
 
@@ -24,6 +23,7 @@ _MENU_NAME = "BlenderKitMenu"
 # ---------------------------------------------------------------------------
 # Logging — route Python log records to Maya's Script Editor output
 # ---------------------------------------------------------------------------
+
 
 class _MayaLogHandler(logging.Handler):
     """Forwards Python logging to om2.MGlobal so output appears in Script Editor."""
@@ -48,14 +48,17 @@ def _install_maya_log_handler() -> None:
     configure_loggers() is called first (stdout handler + BlenderKit formatter),
     then this handler is appended so logs go to *both* stdout and Script Editor.
     """
-    from bk_maya.core.log import BlenderKitFormatter  # noqa: PLC0415
+    from bk_maya.core.log import BlenderKitFormatter
+
     root = logging.getLogger("bk_maya")
     if not any(isinstance(h, _MayaLogHandler) for h in root.handlers):
         handler = _MayaLogHandler()
-        handler.setFormatter(BlenderKitFormatter(
-            fmt="%(levelname)s%(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        ))
+        handler.setFormatter(
+            BlenderKitFormatter(
+                fmt="%(levelname)s%(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
         root.addHandler(handler)
         print("[BlenderKit] Maya log handler installed.")
 
@@ -63,6 +66,7 @@ def _install_maya_log_handler() -> None:
 # ---------------------------------------------------------------------------
 # Path bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _ensure_paths(plugin_dir: str) -> None:
     """Add repo root and bk_maya/lib to sys.path.
@@ -83,9 +87,10 @@ def _ensure_paths(plugin_dir: str) -> None:
 # Top-level menu
 # ---------------------------------------------------------------------------
 
+
 def _build_menu() -> None:
     import maya.cmds as cmds  # type: ignore
-    import maya.mel as mel    # type: ignore
+    import maya.mel as mel  # type: ignore
 
     # Remove stale menu (safe to re-run on reload)
     if cmds.menu(_MENU_NAME, exists=True):
@@ -99,9 +104,7 @@ def _build_menu() -> None:
     cmds.menuItem(
         label="Open Asset Bar",
         annotation="Dock the BlenderKit asset browser panel",
-        command=(
-            "import bk_maya.ui.asset_bar as _ab; _ab.open_asset_bar()"
-        ),
+        command=("import bk_maya.ui.asset_bar as _ab; _ab.open_asset_bar()"),
     )
 
     cmds.menuItem(divider=True)
@@ -119,10 +122,7 @@ def _build_menu() -> None:
     cmds.menuItem(
         label="Log Out",
         annotation="Revoke stored credentials",
-        command=(
-            "import bk_maya.core.auth as _a; _a.logout();"
-            "print('[BlenderKit] Logged out.')"
-        ),
+        command=("import bk_maya.core.auth as _a; _a.logout();print('[BlenderKit] Logged out.')"),
     )
 
     cmds.menuItem(divider=True)
@@ -131,9 +131,7 @@ def _build_menu() -> None:
     cmds.menuItem(
         label="Settings…",
         annotation="Open BlenderKit preferences window",
-        command=(
-            "import bk_maya.ui.settings_dialog as _sd; _sd.open_settings()"
-        ),
+        command=("import bk_maya.ui.settings_dialog as _sd; _sd.open_settings()"),
     )
 
     cmds.menuItem(divider=True)
@@ -149,6 +147,7 @@ def _build_menu() -> None:
 
 def _remove_menu() -> None:
     import maya.cmds as cmds  # type: ignore
+
     if cmds.menu(_MENU_NAME, exists=True):
         cmds.deleteUI(_MENU_NAME, menu=True)
         print("[BlenderKit] Menu removed.")
@@ -157,6 +156,7 @@ def _remove_menu() -> None:
 # ---------------------------------------------------------------------------
 # Maya plugin API
 # ---------------------------------------------------------------------------
+
 
 def maya_useNewAPI() -> None:
     """Declare Maya Python API 2.0 usage."""
@@ -167,7 +167,8 @@ def initializePlugin(plugin: om2.MObject) -> None:
     _ensure_paths(fn.loadPath())
 
     # Configure all bk_maya.* loggers (stdout + API-key masking + emoji prefix)
-    from bk_maya.core.log import configure_loggers  # noqa: PLC0415
+    from bk_maya.core.log import configure_loggers
+
     configure_loggers()
 
     # Also pipe to Maya's Script Editor
@@ -177,7 +178,8 @@ def initializePlugin(plugin: om2.MObject) -> None:
     # It's a separate Maya plug-in file living next to this one, mirroring
     # the proxor pattern (one .py plug-in per locator/draw-override).
     try:
-        import maya.cmds as cmds  # noqa: PLC0415
+        import maya.cmds as cmds
+
         plugin_name = "placement_locator"
         plugin_path = os.path.join(fn.loadPath(), plugin_name + ".py")
         if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
@@ -196,7 +198,7 @@ def initializePlugin(plugin: om2.MObject) -> None:
 
 
 def uninitializePlugin(plugin: om2.MObject) -> None:
-    fn = om2.MFnPlugin(plugin)
+    om2.MFnPlugin(plugin)
     try:
         _remove_menu()
     except Exception as exc:
@@ -204,16 +206,16 @@ def uninitializePlugin(plugin: om2.MObject) -> None:
 
     # Stop the local blenderkit-client process we spawned (if any).
     try:
-        from bk_maya.core import client_lib  # noqa: PLC0415
+        from bk_maya.core import client_lib
+
         client_lib.shutdown()
     except Exception as exc:
         print(f"[BlenderKit] Client shutdown error: {exc}")
 
-    # Leave the placement_locator plug-in loaded – it has its own
+    # Leave the placement_locator plug-in loaded - it has its own
     # uninitializePlugin which will run when Maya itself unloads it (or
     # when the user does `cmds.unloadPlugin("placement_locator")`).  We do
     # NOT force-unload here because the user may unload BlenderKit while
     # still using the locator.
 
     print("[BlenderKit] Plugin uninitialized.")
-

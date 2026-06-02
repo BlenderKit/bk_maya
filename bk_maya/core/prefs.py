@@ -1,4 +1,4 @@
-"""BlenderKit Maya preferences — load, save, and access plugin settings.
+r"""BlenderKit Maya preferences — load, save, and access plugin settings.
 
 Preferences are stored as JSON at:
   Windows : %USERPROFILE%\\Documents\\maya\\blenderkit_prefs.json
@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 # Storage path
 # ---------------------------------------------------------------------------
 
+
 def _prefs_path() -> str:
     if sys.platform == "win32":
         buf = ctypes.create_unicode_buffer(260)
@@ -44,6 +45,7 @@ def _prefs_path() -> str:
 # Dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass
 class _Prefs:
     # ── General ────────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@ class _Prefs:
     """Show usage tips on Maya startup."""
 
     thumbnail_size: int = 128
-    """Thumbnail tile size in the asset bar (pixels, 48–256)."""
+    """Thumbnail tile size in the asset bar (pixels, 48-256)."""
 
     # ── Files ──────────────────────────────────────────────────────────────
     global_dir: str = ""
@@ -158,11 +160,7 @@ class _Prefs:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            f.name: getattr(self, f.name)
-            for f in dataclasses.fields(self)
-            if not f.name.startswith("_")
-        }
+        return {f.name: getattr(self, f.name) for f in dataclasses.fields(self) if not f.name.startswith("_")}
 
     def update_from_dict(self, data: dict[str, Any]) -> None:
         valid = {f.name for f in dataclasses.fields(self) if not f.name.startswith("_")}

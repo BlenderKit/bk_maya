@@ -18,31 +18,26 @@ import logging
 import os
 import sys
 import threading
-from typing import Any
 
-from qtpy.QtCore import Qt, Signal, QObject
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QTabWidget,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QGroupBox,
-    QLabel,
-    QLineEdit,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
     QSlider,
     QSpinBox,
-    QPushButton,
-    QFileDialog,
-    QSizePolicy,
-    QFrame,
-    QSpacerItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
-from qtpy.QtGui import QFont
 
 from ..core import auth
 from ..core.prefs import prefs
@@ -51,16 +46,14 @@ log = logging.getLogger(__name__)
 
 _MAX_RESOLUTION_OPTIONS = ["512", "1024", "2048", "4096", "8192", "ORIGINAL"]
 _PROXY_OPTIONS = [
-    ("SYSTEM",      "System — use OS networking settings"),
+    ("SYSTEM", "System — use OS networking settings"),
     ("ENVIRONMENT", "Environment — use HTTPS_PROXY variable"),
-    ("NONE",        "None — bypass all proxies"),
-    ("CUSTOM",      "Custom — specify address below"),
+    ("NONE", "None — bypass all proxies"),
+    ("CUSTOM", "Custom — specify address below"),
 ]
 
+# region: Helpers
 
-# ---------------------------------------------------------------------------
-# Small reusable widgets
-# ---------------------------------------------------------------------------
 
 def _section(title: str) -> QLabel:
     lbl = QLabel(title)
@@ -85,9 +78,10 @@ def _note(text: str) -> QLabel:
     return lbl
 
 
-# ---------------------------------------------------------------------------
-# Tab: General
-# ---------------------------------------------------------------------------
+# endregion: Helpers
+
+# region: General
+
 
 class _GeneralTab(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -141,9 +135,10 @@ class _GeneralTab(QWidget):
         prefs.thumbnail_size = self._thumb_spin.value()
 
 
-# ---------------------------------------------------------------------------
-# Tab: Files
-# ---------------------------------------------------------------------------
+# endregion: General
+
+# region: Files
+
 
 class _FilesTab(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -155,10 +150,7 @@ class _FilesTab(QWidget):
         # ── Download directory ─────────────────────────────────────────────
         layout.addWidget(_section("Download Directory"))
         layout.addWidget(_hr())
-        layout.addWidget(_note(
-            "Root folder for all downloaded assets. "
-            "Leave blank to use the default location."
-        ))
+        layout.addWidget(_note("Root folder for all downloaded assets. Leave blank to use the default location."))
 
         dir_row = QHBoxLayout()
         self._dir_edit = QLineEdit(prefs.global_dir)
@@ -173,27 +165,32 @@ class _FilesTab(QWidget):
         # ── Import resolution ──────────────────────────────────────────────
         layout.addWidget(_section("Import Resolution"))
         layout.addWidget(_hr())
-        layout.addWidget(_note(
-            "Cap texture dimensions when importing assets. "
-            "ORIGINAL keeps whatever resolution is in the file."
-        ))
+        layout.addWidget(
+            _note("Cap texture dimensions when importing assets. ORIGINAL keeps whatever resolution is in the file."),
+        )
 
         self._res_combo = QComboBox()
         for opt in _MAX_RESOLUTION_OPTIONS:
             label = "ORIGINAL FILE" if opt == "ORIGINAL" else f"{opt}x{opt}"
             self._res_combo.addItem(label, userData=opt)
-        current_idx = _MAX_RESOLUTION_OPTIONS.index(prefs.max_resolution) if prefs.max_resolution in _MAX_RESOLUTION_OPTIONS else 2
+        current_idx = (
+            _MAX_RESOLUTION_OPTIONS.index(prefs.max_resolution)
+            if prefs.max_resolution in _MAX_RESOLUTION_OPTIONS
+            else 2
+        )
         self._res_combo.setCurrentIndex(current_idx)
         layout.addWidget(self._res_combo)
 
         # ── Blender executable ────────────────────────────────────────────
         layout.addWidget(_section("Blender Executable"))
         layout.addWidget(_hr())
-        layout.addWidget(_note(
-            "Path to blender.exe. Used to fetch and convert assets in the "
-            "background. Blender 5.0 or newer is required. Leave blank to "
-            "auto-detect."
-        ))
+        layout.addWidget(
+            _note(
+                "Path to blender.exe. Used to fetch and convert assets in the "
+                "background. Blender 5.0 or newer is required. Leave blank to "
+                "auto-detect.",
+            ),
+        )
 
         be_row = QHBoxLayout()
         self._blender_edit = QLineEdit(prefs.blender_exe)
@@ -217,7 +214,11 @@ class _FilesTab(QWidget):
         layout.addStretch()
 
     def _browse(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Download Directory", self._dir_edit.text() or os.path.expanduser("~"))
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Download Directory",
+            self._dir_edit.text() or os.path.expanduser("~"),
+        )
         if path:
             self._dir_edit.setText(path)
 
@@ -236,6 +237,7 @@ class _FilesTab(QWidget):
 
     def _autodetect_blender(self) -> None:
         from ..core.blender_runner import find_blender_executable
+
         # Temporarily clear the pref so auto-detection ignores any stale value
         saved = prefs.blender_exe
         prefs.blender_exe = ""
@@ -249,8 +251,11 @@ class _FilesTab(QWidget):
 
     def _refresh_blender_status(self) -> None:
         from ..core.blender_runner import (
-            query_blender_version, version_meets_min, MIN_BLENDER_MAJOR,
+            MIN_BLENDER_MAJOR,
+            query_blender_version,
+            version_meets_min,
         )
+
         path = self._blender_edit.text().strip()
         if not path:
             self._blender_status.setText("No path set — will auto-detect at runtime.")
@@ -270,9 +275,7 @@ class _FilesTab(QWidget):
             self._blender_status.setText(f"✓ Blender {v_str} detected.")
             self._blender_status.setStyleSheet("color: #88cc88; font-size: 11px;")
         else:
-            self._blender_status.setText(
-                f"⚠ Blender {v_str} is too old. Requires {MIN_BLENDER_MAJOR}.0 or newer."
-            )
+            self._blender_status.setText(f"⚠ Blender {v_str} is too old. Requires {MIN_BLENDER_MAJOR}.0 or newer.")
             self._blender_status.setStyleSheet("color: #cc6666; font-size: 11px;")
 
     def apply(self) -> None:
@@ -281,9 +284,10 @@ class _FilesTab(QWidget):
         prefs.blender_exe = self._blender_edit.text().strip()
 
 
-# ---------------------------------------------------------------------------
-# Tab: Search
-# ---------------------------------------------------------------------------
+# endregion: Files
+
+# region: Search
+
 
 class _SearchTab(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -344,9 +348,10 @@ class _SearchTab(QWidget):
         prefs.search_texture_resolution_max = self._tex_max.value()
 
 
-# ---------------------------------------------------------------------------
-# Tab: Networking
-# ---------------------------------------------------------------------------
+# endregion: Search
+
+# region: Networking
+
 
 class _NetworkingTab(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -398,9 +403,10 @@ class _NetworkingTab(QWidget):
         prefs.ssl_verification = self._ssl.isChecked()
 
 
-# ---------------------------------------------------------------------------
-# Tab: Account
-# ---------------------------------------------------------------------------
+# endregion: Networking
+
+# region: Account
+
 
 class _AccountBridge(QObject):
     login_done = Signal(bool)
@@ -437,10 +443,12 @@ class _AccountTab(QWidget):
         form.addRow("API key:", self._key_lbl)
         layout.addLayout(form)
 
-        layout.addWidget(_note(
-            "The API key is filled automatically on login. "
-            "You can also paste a key from your profile on blenderkit.com."
-        ))
+        layout.addWidget(
+            _note(
+                "The API key is filled automatically on login. "
+                "You can also paste a key from your profile on blenderkit.com.",
+            ),
+        )
 
         # Manual API key entry
         self._manual_key = QLineEdit()
@@ -502,22 +510,26 @@ class _AccountTab(QWidget):
         """Apply manually-entered API key if provided."""
         manual = self._manual_key.text().strip()
         if manual:
-            import json, time
+            import time
+
             tokens = {"access_token": manual, "expires_at": time.time() + 86400 * 30}
-            from ..core.auth import _save_tokens  # noqa: PLC0415
+            from ..core.auth import _save_tokens
+
             _save_tokens(tokens)
             self._manual_key.clear()
             self._refresh()
 
 
-# ---------------------------------------------------------------------------
-# Settings dialog
-# ---------------------------------------------------------------------------
+# endregion: Account
+
+# region: Main dialog
 
 _dialog_instance: SettingsDialog | None = None
 
 
 class SettingsDialog(QDialog):
+    """Main settings dialog for the BlenderKit Maya client."""
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("BlenderKit — Settings")
@@ -536,24 +548,21 @@ class SettingsDialog(QDialog):
         self._tab_account = _AccountTab()
 
         self._tabs.addTab(self._tab_general, "General")
-        self._tabs.addTab(self._tab_files,   "Files")
-        self._tabs.addTab(self._tab_search,  "Search")
+        self._tabs.addTab(self._tab_files, "Files")
+        self._tabs.addTab(self._tab_search, "Search")
         self._tabs.addTab(self._tab_network, "Networking")
         self._tabs.addTab(self._tab_account, "Account")
         root.addWidget(self._tabs)
 
         # Standard OK / Apply / Cancel buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Apply | QDialogButtonBox.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Apply | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         buttons.button(QDialogButtonBox.Apply).clicked.connect(self._save)
         root.addWidget(buttons)
 
     def _save(self) -> None:
-        for tab in (self._tab_general, self._tab_files, self._tab_search,
-                    self._tab_network, self._tab_account):
+        for tab in (self._tab_general, self._tab_files, self._tab_search, self._tab_network, self._tab_account):
             tab.apply()
         prefs.save()
         log.info("Settings saved.")
@@ -579,3 +588,6 @@ def open_settings(parent: QWidget | None = None, tab: str | None = None) -> None
     _dialog_instance.show()
     _dialog_instance.raise_()
     _dialog_instance.activateWindow()
+
+
+# endregion: Main dialog

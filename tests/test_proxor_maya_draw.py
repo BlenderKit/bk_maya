@@ -16,7 +16,7 @@ _BK_PROXOR_SRC = os.path.join(_REPO_ROOT, "bk_maya", "bk_proxor", "src")
 if _BK_PROXOR_SRC not in sys.path:
     sys.path.insert(0, _BK_PROXOR_SRC)
 
-from bk_proxor._maya.draw import (  # noqa: E402
+from bk_proxor._maya.draw import (
     prx_to_line_segments,
     prx_to_mesh_normals,
     prx_to_mesh_triangles,
@@ -41,11 +41,13 @@ class PrxLineSegmentsTest(unittest.TestCase):
     """``prx_to_line_segments`` — flat pair → ``[(a, b), ...]`` segments."""
 
     def test_empty_payload_returns_empty(self):
+        """Missing or malformed data should not crash, just return an empty list."""
         self.assertEqual(prx_to_line_segments({}), [])
         self.assertEqual(prx_to_line_segments({"data": {}}), [])
         self.assertEqual(prx_to_line_segments(_payload(lines=[])), [])
 
     def test_non_dict_returns_empty(self):
+        """A non-dict payload is malformed, should return an empty list."""
         self.assertEqual(prx_to_line_segments(None), [])  # type: ignore[arg-type]
         self.assertEqual(prx_to_line_segments("not a dict"), [])  # type: ignore[arg-type]
 
@@ -77,6 +79,7 @@ class PrxLineSegmentsTest(unittest.TestCase):
         self.assertEqual(len(segs), 1)
 
     def test_malformed_endpoint_skipped(self):
+        """A malformed endpoint should be skipped, not crash the function."""
         payload = _payload(lines=[(1.0, 2.0, 3.0), ("bad",), (1.0, 2.0, 3.0), (4.0, 5.0, 6.0)])
         segs = prx_to_line_segments(payload, world_scale=100.0, axis_swap_yz=False)
         # 1st pair malformed, 2nd OK
@@ -87,32 +90,33 @@ class PrxMeshTrianglesTest(unittest.TestCase):
     """``prx_to_mesh_triangles`` — flat tri vertices, 3 verts = 1 triangle."""
 
     def test_empty_payload(self):
+        """Missing or malformed data should not crash, just return an empty list."""
         self.assertEqual(prx_to_mesh_triangles({}), [])
         self.assertEqual(prx_to_mesh_triangles(_payload(mesh_pos=[])), [])
 
     def test_maya_negates_z(self):
+        """Maya Y-up with front-axis negation (``axis_swap_yz=False``) negates Z."""
         positions = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (7.0, 8.0, 9.0)]
-        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions),
-                                      world_scale=100.0, axis_swap_yz=False)
+        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions), world_scale=100.0, axis_swap_yz=False)
         self.assertEqual(verts, [(1.0, 2.0, -3.0), (4.0, 5.0, -6.0), (7.0, 8.0, -9.0)])
 
     def test_blender_swap(self):
+        """Blender Z-up with Y/Z swap (``axis_swap_yz=True``) swaps Y/Z, no negation."""
         positions = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (7.0, 8.0, 9.0)]
-        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions),
-                                      world_scale=100.0, axis_swap_yz=True)
+        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions), world_scale=100.0, axis_swap_yz=True)
         self.assertEqual(verts, [(1.0, 3.0, 2.0), (4.0, 6.0, 5.0), (7.0, 9.0, 8.0)])
 
     def test_trailing_dangling_verts_discarded(self):
+        """If the vertex count is not a multiple of 3, discard the trailing 1 or 2 verts."""
         # 5 verts → 1 complete triangle (3 verts), 2 dangling.
         positions = [(0, 0, 0)] * 5
-        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions),
-                                      world_scale=100.0)
+        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions), world_scale=100.0)
         self.assertEqual(len(verts), 3)
 
     def test_world_scale_factor(self):
+        """``world_scale * 0.01`` is the final multiplier (PRX→metres→host)."""
         positions = [(100.0, 0.0, 0.0), (0.0, 100.0, 0.0), (0.0, 0.0, 100.0)]
-        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions),
-                                      world_scale=100.0, axis_swap_yz=False)
+        verts = prx_to_mesh_triangles(_payload(mesh_pos=positions), world_scale=100.0, axis_swap_yz=False)
         # 100 * (100 * 0.01) = 100.0 in Maya cm (i.e. 1 m)
         self.assertEqual(verts[0], (100.0, 0.0, 0.0))
         self.assertEqual(verts[1], (0.0, 100.0, 0.0))
@@ -123,15 +127,18 @@ class PrxMeshNormalsTest(unittest.TestCase):
     """``prx_to_mesh_normals`` — axis-swap only, no scaling."""
 
     def test_empty_payload(self):
+        """Missing or malformed data should not crash, just return an empty list."""
         self.assertEqual(prx_to_mesh_normals({}), [])
         self.assertEqual(prx_to_mesh_normals(_payload(mesh_nrm=[])), [])
 
     def test_blender_swap(self):
+        """Blender Z-up with Y/Z swap (``axis_swap_yz=True``) swaps Y/Z, no negation."""
         nrms = [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0)]
         out = prx_to_mesh_normals(_payload(mesh_nrm=nrms), axis_swap_yz=True)
         self.assertEqual(out, [(0.0, 1.0, 0.0), (1.0, 0.0, 0.0)])
 
     def test_no_swap(self):
+        """Maya Y-up with front-axis negation (``axis_swap_yz=False``) negates Z."""
         nrms = [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0)]
         out = prx_to_mesh_normals(_payload(mesh_nrm=nrms), axis_swap_yz=False)
         self.assertEqual(out, nrms)

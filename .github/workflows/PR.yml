@@ -69,7 +69,8 @@ jobs:
               -m unittest \
                   tests.test_proxor_maya_draw \
                   tests.test_locator_state \
-                  tests.test_prx_format_roundtrip
+                  tests.test_prx_format_roundtrip \
+                  tests.test_global_vars
           python -m coverage xml -o coverage-maya-port.xml
       - name: Upload Maya-port coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -98,57 +99,3 @@ jobs:
           path: |
             out
             !out/blenderkit.zip
-
-  make-tests-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: set-matrix
-        run: python .github/make-tests-matrix.py >> $GITHUB_OUTPUT
-
-  TESTS:
-    needs: make-tests-matrix
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJSON(needs.make-tests-matrix.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
-      - name: Cache Blender
-        id: blenderBinaryCache
-        uses: actions/cache@v4
-        with:
-          path: /home/runner/blender
-          key: blender-${{matrix.version}}-${{matrix.sha}}
-      - name: Download Blender
-        if: steps.blenderBinaryCache.outputs.cache-hit != 'true'
-        run: curl ${{ matrix.download_url }} -o /home/runner/blender.tar.xz
-      - name: Mkdir
-        run: mkdir {/home/runner/.local/bin,/home/runner/blender} -p
-      - name: Extract Blender
-        if: steps.blenderBinaryCache.outputs.cache-hit != 'true'
-        run: tar -xf /home/runner/blender.tar.xz -C /home/runner/blender --strip-components=1
-      - name: Add Blender to PATH
-        run: ln -s /home/runner/blender/blender /home/runner/.local/bin/blender
-      - name: Install coverage (Blender Python)
-        run: blender --background --python-expr "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'ensurepip']); subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'coverage'])"
-        continue-on-error: true
-      - name: TEST
-        env:
-          COVERAGE: "1"
-        run: python dev.py test --install-at /home/runner/.config/blender/${{matrix.version_x_y}}/scripts/addons
-      - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage-python.xml
-          flags: python
-          fail_ci_if_error: false

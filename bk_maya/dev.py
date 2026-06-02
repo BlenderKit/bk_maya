@@ -25,20 +25,17 @@ import sys
 import tempfile
 import zipfile
 
-
 # Pure-Python packages to vendor into lib/.
 # Both qtpy and packaging ship as py3-none-any wheels, so a single download
 # covers all platforms (Windows, macOS, Linux) and all architectures.
 VENDOR_PACKAGES = [
     "qtpy",
     "packaging",  # required by qtpy
-    "requests",   # HTTP client used by core/ and api/
+    "requests",  # HTTP client used by core/ and api/
 ]
 
 
-def vendor_packages(
-    lib_dir: str, packages: list[str] = VENDOR_PACKAGES
-) -> None:
+def vendor_packages(lib_dir: str, packages: list[str] = VENDOR_PACKAGES) -> None:
     """Download pure-Python wheels and extract them into *lib_dir*.
 
     Uses ``pip download --no-deps --only-binary=:all:`` so only pre-built
@@ -53,10 +50,14 @@ def vendor_packages(
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(
             [
-                sys.executable, "-m", "pip", "download",
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
                 "--no-deps",
                 "--only-binary=:all:",
-                "--dest", tmp,
+                "--dest",
+                tmp,
                 *packages,
             ],
             check=True,
@@ -79,45 +80,33 @@ def vendor_packages(
 
 def blenderkit_client_build(abs_build_dir: str):
     """Build blenderkit-client for all platforms in parallel."""
-    with open("client/VERSION", "r") as f:
+    with open("client/VERSION") as f:
         client_version = f.read().strip()
     build_dir = os.path.join(abs_build_dir, "client")
     builds = [
         {
             "env": {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", "blenderkit-client-windows-x86_64.exe"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-windows-x86_64.exe"),
         },
         {
             "env": {"GOOS": "windows", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", f"blenderkit-client-windows-arm64.exe"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-windows-arm64.exe"),
         },
         {
             "env": {"GOOS": "darwin", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", f"blenderkit-client-macos-x86_64"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-macos-x86_64"),
         },
         {
             "env": {"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", f"blenderkit-client-macos-arm64"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-macos-arm64"),
         },
         {
             "env": {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", f"blenderkit-client-linux-x86_64"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-linux-x86_64"),
         },
         {
             "env": {"GOOS": "linux", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(
-                f"v{client_version}", f"blenderkit-client-linux-arm64"
-            ),
+            "output": os.path.join(f"v{client_version}", "blenderkit-client-linux-arm64"),
         },
     ]
     ldflags = f"-X main.ClientVersion={client_version}"
@@ -131,9 +120,7 @@ def blenderkit_client_build(abs_build_dir: str):
         )
         build["process"] = process
 
-    print(
-        f"BlenderKit-Client v{client_version} build started for {len(builds)} platforms."
-    )
+    print(f"BlenderKit-Client v{client_version} build started for {len(builds)} platforms.")
     builds_ok = True
     for build in builds:
         build["process"].wait()
@@ -158,6 +145,7 @@ def verify_client_binaries(binaries_path: str):
     for file_name in client_files:
         print(f"\n\n==={file_name}")
         file_path = os.path.join(binaries_path, file_name)
+        expected = ""
 
         # WINDOWS
         if file_path.endswith(".exe"):
@@ -176,11 +164,11 @@ def verify_client_binaries(binaries_path: str):
                 and "ST=Prague" in stdout
                 and "C=CZ" in stdout
             ):
-                print(f">>> OK!")
+                print(">>> OK!")
             elif expected in str(error):
-                print(f">>> WARNING")
+                print(">>> WARNING")
             else:
-                print(f">>> ERROR")
+                print(">>> ERROR")
                 signatures_ok = False
             continue
 
@@ -198,7 +186,7 @@ def verify_client_binaries(binaries_path: str):
             if expected in str(output) or expected in str(error):
                 print(">>> OK on codesigning")
             else:
-                print(f">>> ERROR on codesigning")
+                print(">>> ERROR on codesigning")
                 signatures_ok = False
 
             # validate notarization
@@ -211,16 +199,16 @@ def verify_client_binaries(binaries_path: str):
             print(f"out:{output}, err:{error}")
             expected = "origin=Developer ID Application: BlenderKit s.r.o. (A839AY9877)"
             if expected in str(output):
-                print(f">>> OK notarization!")
+                print(">>> OK notarization!")
             elif expected in str(error):
-                print(f">>> WARNING notarization")
+                print(">>> WARNING notarization")
             else:
-                print(f">>> ERROR notarization")
+                print(">>> ERROR notarization")
                 signatures_ok = False
 
             continue
 
-    if signatures_ok == False:
+    if not signatures_ok:
         print("\n>>>>> Verification failed for one or more files, exiting.")
         exit(1)
 
@@ -235,7 +223,7 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
         print(f"Client binaries path {binaries_path} is not a directory, exiting.")
         exit(1)
 
-    with open("client/VERSION", "r") as f:
+    with open("client/VERSION") as f:
         expected_client_version = f"v{f.read().strip()}"
 
     client_version = os.path.basename(os.path.normpath(binaries_path))
@@ -259,9 +247,7 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
     print(f"BlenderKit-Client binaries copied from {binaries_path} to {target_dir}")
 
 
-def do_build(
-    install_at=None, include_tests=False, clean_dir=None, client_binaries_path=None
-):
+def do_build(install_at=None, include_tests=False, clean_dir=None, client_binaries_path=None):
     """Build addon by copying relevant addon directories and files to ./out/blenderkit directory.
     Create zip in ./out/blenderkit.zip.
     - install_at: string or list of paths where to install the addon, e.g. ["/path1/addons", "/path2/addons"]
@@ -279,7 +265,7 @@ def do_build(
     lib_src = os.path.abspath("lib")
     vendor_packages(lib_src)
 
-    if client_binaries_path == None:
+    if client_binaries_path is None:
         blenderkit_client_build(addon_build_dir)
     else:
         copy_client_binaries(client_binaries_path, addon_build_dir)
@@ -314,8 +300,12 @@ def do_build(
         "bk_proxor",
         f"{addon_build_dir}/bk_proxor",
         ignore=shutil.ignore_patterns(
-            "__pycache__", ".DS_Store", ".git", ".vscode",
-            "pyproject.toml", "README.md",
+            "__pycache__",
+            ".DS_Store",
+            ".git",
+            ".vscode",
+            "pyproject.toml",
+            "README.md",
         ),
     )
     shutil.copytree(
@@ -323,9 +313,7 @@ def do_build(
         f"{addon_build_dir}/blendfiles",
         ignore=shutil.ignore_patterns(".DS_Store"),
     )
-    shutil.copytree(
-        "data", f"{addon_build_dir}/data", ignore=shutil.ignore_patterns(".DS_Store")
-    )
+    shutil.copytree("data", f"{addon_build_dir}/data", ignore=shutil.ignore_patterns(".DS_Store"))
     shutil.copytree(
         "thumbnails",
         f"{addon_build_dir}/thumbnails",
@@ -358,7 +346,6 @@ def do_build(
 
     # Handle multiple install locations
     if install_at is not None:
-
         for location in install_at:
             print(f"Copying to {location}/blenderkit")
             shutil.rmtree(f"{location}/blenderkit", ignore_errors=True)
@@ -379,7 +366,7 @@ def run_tests(args):
         client_binaries_path=args.client_build,
     )
     # Best effort here to keep it simple and detect automatically, other option would be to add it as a flag
-    if "extensions/user_default" in args.install_at:
+    if "extensions/user_default" in args.install_at:  # noqa: SIM108
         extensions_format = True
     else:
         extensions_format = False
@@ -389,7 +376,7 @@ def run_tests(args):
 
 def run_python_tests(extension_format: bool, fast: bool):
     print("=== Running add-on integration tests in Blender ===")
-    if extension_format:  # Here we expect default settings
+    if extension_format:  # Here we expect default settings  # noqa: SIM108
         addon_package_name = "bl_ext.user_default.blenderkit"
     else:  # legacy format
         addon_package_name = "blenderkit"
@@ -484,9 +471,7 @@ if args.command == "build":
     )
 elif args.command == "release":
     if args.client_build is None:
-        print(
-            "Error: Client binaries path (containing signed binaries) is required for release"
-        )
+        print("Error: Client binaries path (containing signed binaries) is required for release")
         exit(1)
     verify_client_binaries(args.client_build)
     do_build(

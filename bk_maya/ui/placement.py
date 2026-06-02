@@ -1,11 +1,11 @@
-"""BlenderKit Maya – drag-to-place asset system.
+"""BlenderKit Maya - drag-to-place asset system.
 
 Architecture
 ============
 Drag starts from an :class:`AssetTile` (inside the PySide panel) and places
 the asset into the Maya 3D viewport.
 
-The visualisation is rendered by a custom locator node + draw override
+The visualization is rendered by a custom locator node + draw override
 (``bkPlacementLocator``) registered in :mod:`bk_maya.plugins.placement_locator`.
 The draw override reads the live placement snapshot from this module's
 :func:`get_drag_snapshot` accessor each frame, so this file just keeps the
@@ -31,6 +31,7 @@ Ray casting
    ``MFnMesh.closestIntersection`` (API 2.0).
 2. Fallback: intersect the Y=0 floor plane.
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,6 +49,7 @@ try:
     from qtpy.QtCore import QEvent, QObject, QPoint, Qt, QTimer
     from qtpy.QtGui import QColor, QCursor, QPainter, QPen, QPixmap
     from qtpy.QtWidgets import QApplication, QWidget
+
     try:
         from qtpy.QtCore import QAbstractNativeEventFilter
     except ImportError:  # pragma: no cover
@@ -94,8 +96,8 @@ _wheel_accum: int = 0
 _lmb_up_pending: bool = False
 _rmb_up_pending: bool = False
 
-_hook_handle = None       # HHOOK
-_hook_proc_ref = None     # keep CFUNCTYPE alive
+_hook_handle = None  # HHOOK
+_hook_proc_ref = None  # keep CFUNCTYPE alive
 _hook_installed = False
 
 
@@ -124,7 +126,8 @@ def _ll_mouse_proc(nCode, wParam, lParam):
             msg = wParam
             if msg == _WM_MOUSEWHEEL_LL:
                 info = ctypes.cast(
-                    lParam, ctypes.POINTER(_MSLLHOOKSTRUCT)
+                    lParam,
+                    ctypes.POINTER(_MSLLHOOKSTRUCT),
                 )[0]
                 raw = (info.mouseData >> 16) & 0xFFFF
                 if raw >= 0x8000:
@@ -175,22 +178,29 @@ def _install_low_level_hook() -> None:
             user32 = ctypes.WinDLL("user32", use_last_error=True)
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             HOOKPROC = ctypes.WINFUNCTYPE(
-                ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+                ctypes.c_long,
+                ctypes.c_int,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
             )
             _hook_proc_ref = HOOKPROC(_ll_mouse_proc)
             user32.SetWindowsHookExW.restype = wintypes.HHOOK
             user32.SetWindowsHookExW.argtypes = [
-                ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD,
+                ctypes.c_int,
+                HOOKPROC,
+                wintypes.HINSTANCE,
+                wintypes.DWORD,
             ]
             user32.GetMessageW.argtypes = [
-                ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT,
+                ctypes.c_void_p,
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.UINT,
             ]
             user32.GetMessageW.restype = ctypes.c_int
 
             hmod = kernel32.GetModuleHandleW(None)
-            _hook_handle = user32.SetWindowsHookExW(
-                _WH_MOUSE_LL, _hook_proc_ref, hmod, 0
-            )
+            _hook_handle = user32.SetWindowsHookExW(_WH_MOUSE_LL, _hook_proc_ref, hmod, 0)
             if not _hook_handle:
                 err = ctypes.get_last_error()
                 log.warning(
@@ -201,9 +211,9 @@ def _install_low_level_hook() -> None:
                 return
             _hook_installed = True
             log.info(
-                "Low-level mouse hook installed on dedicated thread "
-                "(hhook=%s, tid=%s).",
-                _hook_handle, threading.get_ident(),
+                "Low-level mouse hook installed on dedicated thread (hhook=%s, tid=%s).",
+                _hook_handle,
+                threading.get_ident(),
             )
 
             # Pump messages until the thread exits (process shutdown).
@@ -211,8 +221,8 @@ def _install_low_level_hook() -> None:
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
-        except Exception as exc:
-            log.warning("Hook thread crashed: %s", exc)
+        except Exception:
+            log.exception("Hook thread crashed:")
 
     t = threading.Thread(
         target=_hook_thread_main,
@@ -220,7 +230,6 @@ def _install_low_level_hook() -> None:
         daemon=True,
     )
     t.start()
-
 
 
 def _drain_wheel_accum() -> int:
@@ -248,7 +257,6 @@ def _consume_rmb_up() -> bool:
     return False
 
 
-
 def _meters_to_internal() -> float:
     """Return the scale factor that converts 1 meter to Maya's internal unit.
 
@@ -258,9 +266,8 @@ def _meters_to_internal() -> float:
     """
     try:
         import maya.api.OpenMaya as om2
-        return om2.MDistance(1.0, om2.MDistance.kMeters).asUnits(
-            om2.MDistance.internalUnit()
-        )
+
+        return om2.MDistance(1.0, om2.MDistance.kMeters).asUnits(om2.MDistance.internalUnit())
     except Exception:
         return 100.0
 
@@ -269,20 +276,21 @@ def _meters_to_internal() -> float:
 # Placement state  (module-level, queried by the draw override)
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class _State:
     asset_data: dict[str, Any] = field(default_factory=dict)
-    thumb_path: str  = ""
+    thumb_path: str = ""
     # bbox in object-local space (matches BlenderKit API bbox_min/bbox_max)
-    bbox_min:   tuple[float, float, float] = (-0.5, 0.0, -0.5)
-    bbox_max:   tuple[float, float, float] = ( 0.5, 1.0,  0.5)
+    bbox_min: tuple[float, float, float] = (-0.5, 0.0, -0.5)
+    bbox_max: tuple[float, float, float] = (0.5, 1.0, 0.5)
     # current world placement
-    location:   tuple[float, float, float] = (0.0, 0.0, 0.0)
-    rotation_y: float = 0.0   # degrees, controlled by mouse wheel
+    location: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_y: float = 0.0  # degrees, controlled by mouse wheel
     # hit status
-    has_hit:    bool  = False
-    hit_floor:  bool  = False
-    active:     bool  = False
+    has_hit: bool = False
+    hit_floor: bool = False
+    active: bool = False
     # world-space surface normal at the raycast hit; (0,1,0) when the
     # cursor is on the floor plane or no surface was struck.
     surface_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
@@ -312,17 +320,19 @@ def get_drag_snapshot() -> dict[str, Any] | None:
 # Maya viewport helpers
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _get_viewport_widget() -> "QWidget | None":
+
+def _get_viewport_widget() -> QWidget | None:
     """Return the QWidget for Maya's active 3D viewport.
 
     Tries four strategies; logs at debug which one won.
     """
     try:
         import maya.OpenMayaUI as omui1
+
         view = omui1.M3dView.active3dView()
         ptr = view.widget()
 
-        if isinstance(ptr, QWidget):
+        if isinstance(ptr, QWidget):  # type: ignore
             return ptr
 
         if ptr is not None and int(ptr) != 0:
@@ -331,13 +341,13 @@ def _get_viewport_widget() -> "QWidget | None":
                     sh = __import__(sh_name)
                     return sh.wrapInstance(int(ptr), QWidget)
                 except Exception:
-                    pass
+                    log.exception("Failed to wrap M3dView widget with %s:", sh_name)
     except Exception as e:
         log.debug("BK viewport: M3dView.widget() error: %s", e)
 
     try:
-        import maya.cmds as cmds
         import maya.OpenMayaUI as omui1
+        from maya import cmds
 
         focused = cmds.getPanel(withFocus=True) or ""
         if focused and cmds.getPanel(typeOf=focused) == "modelPanel":
@@ -353,29 +363,37 @@ def _get_viewport_widget() -> "QWidget | None":
                     for sh_name in ("shiboken6", "shiboken2"):
                         try:
                             sh = __import__(sh_name)
-                            return sh.wrapInstance(int(ptr), QWidget)
+                            return sh.wrapInstance(int(ptr), QWidget)  # type: ignore
                         except Exception:
-                            pass
+                            log.exception("Failed to wrap modelPanel widget with %s:", sh_name)
             except Exception:
-                pass
+                log.exception("Error processing modelPanel %s:", panel)
     except Exception:
-        pass
+        log.exception("BK viewport: modelPanel query error:")
 
     best, best_area = None, 0
     for w in QApplication.allWidgets():
         if not w.isVisible():
             continue
         cn = w.metaObject().className() if w.metaObject() else ""
-        if any(kw in cn for kw in (
-            "GLWidget", "MayaGL", "THoverQ", "modelEditor", "MayaViewport", "ViewportUI",
-        )):
+        if any(
+            kw in cn
+            for kw in (
+                "GLWidget",
+                "MayaGL",
+                "THoverQ",
+                "modelEditor",
+                "MayaViewport",
+                "ViewportUI",
+            )
+        ):
             area = w.width() * w.height()
             if area > best_area:
                 best, best_area = w, area
     return best
 
 
-def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
+def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
     """Cast a ray from viewport pixel (vp_x, vp_y) (Qt coords).
 
     Returns ``(has_hit, (x,y,z), (nx,ny,nz), hit_floor)``.  ``hit_floor``
@@ -390,10 +408,10 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
 
         view = omui2.M3dView.active3dView()
         vp_h = view.portHeight()
-        maya_y = vp_h - vp_y   # Qt top-down → Maya bottom-up
+        maya_y = vp_h - vp_y  # Qt top-down → Maya bottom-up
 
         near_pt = om2.MPoint()
-        far_pt  = om2.MPoint()
+        far_pt = om2.MPoint()
         view.viewToWorld(int(vp_x), int(maya_y), near_pt, far_pt)
 
         ray_src = om2.MFloatPoint(near_pt.x, near_pt.y, near_pt.z)
@@ -405,7 +423,7 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
         ray_dir.normalize()
 
         closest_dist = float("inf")
-        best_hit:    tuple | None = None
+        best_hit: tuple | None = None
         best_normal: tuple | None = None
 
         it = om2.MItDag(om2.MItDag.kDepthFirst, om2.MFn.kMesh)
@@ -418,10 +436,11 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
 
                 fn = om2.MFnMesh(dag_path)
                 result = fn.closestIntersection(
-                    ray_src, ray_dir,
+                    ray_src,
+                    ray_dir,
                     om2.MSpace.kWorld,
-                    9999999.0,   # maxParam
-                    False,       # testBothDirections
+                    9999999.0,  # maxParam
+                    False,  # testBothDirections
                 )
                 if result is not None:
                     hit_pt = result[0]
@@ -429,7 +448,7 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
                     dx = hit_pt.x - near_pt.x
                     dy = hit_pt.y - near_pt.y
                     dz = hit_pt.z - near_pt.z
-                    d = math.sqrt(dx*dx + dy*dy + dz*dz)
+                    d = math.sqrt(dx * dx + dy * dy + dz * dz)
                     if 0.001 < d < closest_dist:
                         closest_dist = d
                         best_hit = (float(hit_pt.x), float(hit_pt.y), float(hit_pt.z))
@@ -443,19 +462,19 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
                         if nrm is None:
                             try:
                                 nv, _face = fn.getClosestNormal(
-                                    om2.MPoint(*best_hit), om2.MSpace.kWorld,
+                                    om2.MPoint(*best_hit),
+                                    om2.MSpace.kWorld,
                                 )
                                 nrm = (float(nv.x), float(nv.y), float(nv.z))
                             except Exception:
                                 nrm = floor_normal
                         # Flip the normal toward the camera so back-face
                         # hits don't invert the asset.
-                        if (nrm[0] * ray_dir.x + nrm[1] * ray_dir.y
-                                + nrm[2] * ray_dir.z) > 0.0:
+                        if (nrm[0] * ray_dir.x + nrm[1] * ray_dir.y + nrm[2] * ray_dir.z) > 0.0:
                             nrm = (-nrm[0], -nrm[1], -nrm[2])
                         # Normalize defensively.
-                        ln = math.sqrt(nrm[0]**2 + nrm[1]**2 + nrm[2]**2) or 1.0
-                        best_normal = (nrm[0]/ln, nrm[1]/ln, nrm[2]/ln)
+                        ln = math.sqrt(nrm[0] ** 2 + nrm[1] ** 2 + nrm[2] ** 2) or 1.0
+                        best_normal = (nrm[0] / ln, nrm[1] / ln, nrm[2] / ln)
             except Exception:
                 pass
             it.next()
@@ -474,13 +493,13 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
                 # Floor counts as a HIT so the bbox snaps to it (cyan in the
                 # draw override).  Returning has_hit=False would leave the
                 # bbox at world origin which is never what the user wants.
-                return True, (ox + t*dx, 0.0, oz + t*dz), floor_normal, True
+                return True, (ox + t * dx, 0.0, oz + t * dz), floor_normal, True
 
         # No hit and the ray is parallel to the floor — project the camera
         # eye-line forward by an arbitrary distance so the bbox is still
         # visible at the cursor depth instead of snapping back to origin.
         t = 1000.0  # 10 m in Maya cm units; comfortably within view
-        return False, (ox + t*dx, oy + t*dy, oz + t*dz), floor_normal, False
+        return False, (ox + t * dx, oy + t * dy, oz + t * dz), floor_normal, False
 
     except Exception as exc:
         log.debug("Raycast error: %s", exc)
@@ -500,6 +519,7 @@ def _refresh_viewport(*, light: bool = False) -> None:
     if light:
         try:
             import maya.api.OpenMayaUI as omui2
+
             omui2.M3dView.active3dView().refresh(False, False)
             return
         except Exception:
@@ -507,17 +527,19 @@ def _refresh_viewport(*, light: bool = False) -> None:
 
     try:
         import maya.cmds as cmds
+
         cmds.refresh(currentView=True, force=True)
     except Exception:
         try:
             import maya.api.OpenMayaUI as omui2
+
             omui2.M3dView.active3dView().refresh(force=True)
         except Exception as e:
             log.debug("viewport refresh failed: %s", e)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Locator node lifecycle (transient – created on drag start, deleted on end)
+# Locator node lifecycle (transient - created on drag start, deleted on end)
 # ═════════════════════════════════════════════════════════════════════════════
 
 _LOCATOR_NAME = "bkPlacementDragLocator"
@@ -536,11 +558,11 @@ def _create_locator() -> str | None:
         if "bkPlacementLocator" not in node_types:
             # Try loading the sibling plug-in by absolute path (the bk_maya
             # core dir is sibling to ui/, and plugins/ is sibling to that).
-            here = os.path.dirname(os.path.abspath(__file__))            # …/bk_maya/ui
-            bk_maya_dir = os.path.dirname(here)                          # …/bk_maya
+            here = os.path.dirname(os.path.abspath(__file__))  # …/bk_maya/ui
+            bk_maya_dir = os.path.dirname(here)  # …/bk_maya
             plugin_path = os.path.join(bk_maya_dir, "plugins", "placement_locator.py")
             log.warning(
-                "bkPlacementLocator not registered – attempting to load %s",
+                "bkPlacementLocator not registered - attempting to load %s",
                 plugin_path,
             )
             try:
@@ -573,7 +595,7 @@ def _create_locator() -> str | None:
         # the shape, so we always target it explicitly.
         try:
             shapes = cmds.listRelatives(node, shapes=True, fullPath=False) or []
-            if shapes:
+            if shapes:  # noqa: SIM108
                 shape_name = shapes[0]
             else:
                 # Already the shape (createNode returned the shape directly).
@@ -594,6 +616,7 @@ def _create_locator() -> str | None:
 def _delete_locator() -> None:
     try:
         import maya.cmds as cmds
+
         if cmds.objExists(_LOCATOR_NAME):
             cmds.delete(_LOCATOR_NAME)
     except Exception as exc:
@@ -601,8 +624,9 @@ def _delete_locator() -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Proxor loader (optional – falls back to bbox draw when absent)
+# Proxor loader (optional - falls back to bbox draw when absent)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 def _proxor_cache_path(asset_data: dict[str, Any]) -> str:
     """Return the on-disk path where this asset's ``.prxc`` should live.
@@ -616,6 +640,7 @@ def _proxor_cache_path(asset_data: dict[str, Any]) -> str:
     asset_type = asset_data.get("assetType", "model") or "model"
     try:
         from bk_maya.core import prefs as _prefs_mod
+
         base = _prefs_mod.prefs.global_dir_resolved()
     except Exception:
         base = os.path.expanduser("~/blenderkit_data")
@@ -650,15 +675,14 @@ def _load_proxor_payload(asset_data: dict[str, Any]) -> dict[str, Any]:
     # Backwards-compat lookups in older cache layouts.
     try:
         from bk_maya.core import global_vars as gv  # type: ignore
+
         for attr in ("CACHE_DIR", "PROXOR_DIR", "BLENDERKIT_DATA_DIR"):
             p = getattr(gv, attr, None)
             if p:
                 candidates.append(os.path.join(str(p), "proxors", f"{asset_base_id}.prxc"))
     except Exception:
         pass
-    candidates.append(
-        os.path.expanduser(f"~/blenderkit_data/proxors/{asset_base_id}.prxc")
-    )
+    candidates.append(os.path.expanduser(f"~/blenderkit_data/proxors/{asset_base_id}.prxc"))
 
     prxc_path = ""
     for c in candidates:
@@ -684,11 +708,12 @@ def _parse_prxc(prxc_path: str) -> dict[str, Any]:
     """
     out: dict[str, Any] = {"lines": [], "mesh": []}
     try:
-        from bk_maya.bk_proxor import prx_format as pf
         from bk_proxor._maya.draw import (
             prx_to_line_segments,
             prx_to_mesh_triangles,
         )
+
+        from bk_maya.bk_proxor import prx_format as pf
     except Exception as exc:
         log.debug("bk_proxor unavailable: %s", exc)
         return out
@@ -696,9 +721,8 @@ def _parse_prxc(prxc_path: str) -> dict[str, Any]:
         payload = pf.read_prx(prxc_path)
         scale = _meters_to_internal()
         out["lines"] = prx_to_line_segments(payload, world_scale=scale, axis_swap_yz=False)
-        out["mesh"]  = prx_to_mesh_triangles(payload, world_scale=scale, axis_swap_yz=False)
-        log.debug("Proxor loaded from %s: %d segments, %d mesh verts",
-                  prxc_path, len(out["lines"]), len(out["mesh"]))
+        out["mesh"] = prx_to_mesh_triangles(payload, world_scale=scale, axis_swap_yz=False)
+        log.debug("Proxor loaded from %s: %d segments, %d mesh verts", prxc_path, len(out["lines"]), len(out["mesh"]))
     except Exception as exc:
         log.debug("Proxor parse failed for %s: %s", prxc_path, exc)
     return out
@@ -709,8 +733,7 @@ def _parse_prxc_to_segments(prxc_path: str) -> list[list[tuple]]:
     return _parse_prxc(prxc_path).get("lines", [])
 
 
-def _start_proxor_fetch_for_locator(asset_data: dict[str, Any],
-                                    locator_name: str) -> None:
+def _start_proxor_fetch_for_locator(asset_data: dict[str, Any], locator_name: str) -> None:
     """Async ``.prxc`` fetch whose completion callback writes directly to
     *locator_name* via ``locator_state``. Used by ``place_at_origin`` so
     the proxor swap-in does not depend on ``DragSession`` being active.
@@ -747,8 +770,11 @@ def _start_proxor_fetch_for_locator(asset_data: dict[str, Any],
             plc.set_proxor_lines(locator_name, list(payload.get("lines", [])))
             plc.set_proxor_mesh(locator_name, list(payload.get("mesh", [])))
             _refresh_viewport(light=True)
-            log.info("[PROXOR] locator-bound swap-in: %d segments, %d mesh-verts",
-                     len(payload.get("lines", [])), len(payload.get("mesh", [])))
+            log.info(
+                "[PROXOR] locator-bound swap-in: %d segments, %d mesh-verts",
+                len(payload.get("lines", [])),
+                len(payload.get("mesh", [])),
+            )
         except Exception as exc:
             log.debug("locator-bound proxor publish failed: %s", exc)
 
@@ -781,6 +807,7 @@ def _start_proxor_fetch_for_locator(asset_data: dict[str, Any],
                 pass
 
     import threading
+
     threading.Thread(
         target=_worker,
         name=f"bk-prxc-fetch-{asset_base_id[:8]}",
@@ -795,7 +822,7 @@ def _start_proxor_fetch_for_locator(asset_data: dict[str, Any],
 _CURSOR_SIZE = 64
 
 
-def _make_cursor(thumb_path: str) -> "QCursor":
+def _make_cursor(thumb_path: str) -> QCursor:
     pix = QPixmap(thumb_path) if thumb_path and os.path.isfile(thumb_path) else QPixmap()
     if pix.isNull():
         pix = QPixmap(_CURSOR_SIZE, _CURSOR_SIZE)
@@ -808,8 +835,10 @@ def _make_cursor(thumb_path: str) -> "QCursor":
         p.end()
     else:
         pix = pix.scaled(
-            _CURSOR_SIZE, _CURSOR_SIZE,
-            Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            _CURSOR_SIZE,
+            _CURSOR_SIZE,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
         )
     return QCursor(pix, 0, 0)
 
@@ -818,23 +847,24 @@ def _make_cursor(thumb_path: str) -> "QCursor":
 # Drag session (singleton Qt event filter)
 # ═════════════════════════════════════════════════════════════════════════════
 
-class DragSession(QObject):
+
+class DragSession(QObject):  # type: ignore
     """Qt event filter driving a single drag-to-place operation."""
 
-    _instance: "DragSession | None" = None
+    _instance: DragSession | None = None
 
     @classmethod
-    def get(cls) -> "DragSession":
+    def get(cls) -> DragSession:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
     def __init__(self) -> None:
         super().__init__()
-        self._vp_widget: "QWidget | None" = None
+        self._vp_widget: QWidget | None = None
         self._locator_name: str | None = None
         self._download_started = False
-        self._poll_timer: "QTimer | None" = None  # polls cursor position
+        self._poll_timer: QTimer | None = None  # polls cursor position
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -860,14 +890,12 @@ class DragSession(QObject):
                 except TypeError:
                     return default
             try:
-                return (float(seq[0]) * scale,
-                        float(seq[1]) * scale,
-                        float(seq[2]) * scale)
+                return (float(seq[0]) * scale, float(seq[1]) * scale, float(seq[2]) * scale)
             except (TypeError, ValueError, IndexError):
                 return default
 
-        default_min = (-0.5 * scale, 0.0,        -0.5 * scale)
-        default_max = ( 0.5 * scale, 1.0 * scale, 0.5 * scale)
+        default_min = (-0.5 * scale, 0.0, -0.5 * scale)
+        default_max = (0.5 * scale, 1.0 * scale, 0.5 * scale)
 
         # The BlenderKit search endpoint returns the bbox split across six
         # scalar params under ``dictParameters`` — ``boundBoxMinX/Y/Z`` and
@@ -879,25 +907,17 @@ class DragSession(QObject):
         raw_min = asset_data.get("bbox_min")
         raw_max = asset_data.get("bbox_max")
         if raw_min is None or raw_max is None:
-            params = (asset_data.get("dictParameters")
-                      or asset_data.get("parameters")
-                      or {})
+            params = asset_data.get("dictParameters") or asset_data.get("parameters") or {}
             try:
-                mn = (float(params["boundBoxMinX"]),
-                      float(params["boundBoxMinY"]),
-                      float(params["boundBoxMinZ"]))
-                mx = (float(params["boundBoxMaxX"]),
-                      float(params["boundBoxMaxY"]),
-                      float(params["boundBoxMaxZ"]))
+                mn = (float(params["boundBoxMinX"]), float(params["boundBoxMinY"]), float(params["boundBoxMinZ"]))
+                mx = (float(params["boundBoxMaxX"]), float(params["boundBoxMaxY"]), float(params["boundBoxMaxZ"]))
                 if raw_min is None:
                     raw_min = mn
                 if raw_max is None:
                     raw_max = mx
-                log.info("bbox extracted from dictParameters: min=%s max=%s",
-                         mn, mx)
+                log.info("bbox extracted from dictParameters: min=%s max=%s", mn, mx)
             except (KeyError, TypeError, ValueError):
-                log.warning("Asset %s has no usable bbox – using 1 m default cube",
-                            asset_data.get("name", "?"))
+                log.warning("Asset %s has no usable bbox - using 1 m default cube", asset_data.get("name", "?"))
 
         bbox_min = _coerce_bbox(raw_min, default_min)
         bbox_max = _coerce_bbox(raw_max, default_max)
@@ -911,28 +931,27 @@ class DragSession(QObject):
 
         _prxc = _load_proxor_payload(asset_data)
         _active_state = _State(
-            asset_data   = asset_data,
-            thumb_path   = thumb_path,
-            bbox_min     = bbox_min,
-            bbox_max     = bbox_max,
-            location     = (0.0, 0.0, 0.0),
-            rotation_y   = 0.0,
-            active       = True,
-            proxor_lines = _prxc.get("lines", []),
-            proxor_mesh  = _prxc.get("mesh", []),
+            asset_data=asset_data,
+            thumb_path=thumb_path,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            location=(0.0, 0.0, 0.0),
+            rotation_y=0.0,
+            active=True,
+            proxor_lines=_prxc.get("lines", []),
+            proxor_mesh=_prxc.get("mesh", []),
         )
         log.info(
             "Drag start: asset=%s bbox_min=%s bbox_max=%s",
-            asset_data.get("name", "?"), bbox_min, bbox_max,
+            asset_data.get("name", "?"),
+            bbox_min,
+            bbox_max,
         )
 
         # Spawn the locator (draw override starts ticking)
         self._locator_name = None if delay_locator else _create_locator()
         if self._locator_name is None:
-            log.warning(
-                "bkPlacementLocator node type not registered – "
-                "load the BlenderKit plugin via Plug-in Manager."
-            )
+            log.warning("bkPlacementLocator node type not registered - load the BlenderKit plugin via Plug-in Manager.")
         else:
             self._publish_bbox_to_locator()
             self._publish_proxor_to_locator()
@@ -973,7 +992,7 @@ class DragSession(QObject):
             if self._vp_widget is not None:
                 self._vp_widget.installEventFilter(self)
                 self._filtered_widgets.append(self._vp_widget)
-                # Walk up the ancestor chain – Maya's modelPanel nests the
+                # Walk up the ancestor chain - Maya's modelPanel nests the
                 # QOpenGLWidget under several QWidgets and the wheel event
                 # may be redirected to one of them.
                 w = self._vp_widget.parent()
@@ -989,7 +1008,7 @@ class DragSession(QObject):
                 # Also walk down to direct children (Maya's view contains a
                 # native window surface child that often receives wheel).
                 try:
-                    for ch in self._vp_widget.findChildren(QWidget):
+                    for ch in self._vp_widget.findChildren(QWidget):  # type: ignore
                         ch.installEventFilter(self)
                         self._filtered_widgets.append(ch)
                 except Exception:
@@ -1013,7 +1032,7 @@ class DragSession(QObject):
         try:
             if self._poll_timer is None:
                 self._poll_timer = QTimer()
-                self._poll_timer.setInterval(16)   # ms (~60 fps)
+                self._poll_timer.setInterval(16)  # ms (~60 fps)
                 # PreciseTimer keeps the cursor poll firing at the requested
                 # rate even when Maya's main thread is busy redrawing the
                 # viewport. The default CoarseTimer is allowed to be delayed
@@ -1033,6 +1052,7 @@ class DragSession(QObject):
         # In-viewport controls hint (Maya HUD message, no GL text overlay).
         try:
             import maya.cmds as cmds
+
             cmds.inViewMessage(
                 amg=(
                     f"<b>{asset_data.get('name', 'Asset')}</b>  "
@@ -1147,9 +1167,7 @@ class DragSession(QObject):
         inside = vp.rect().contains(local)
 
         # Create the locator on first viewport entry when delay_locator was set.
-        if (getattr(self, "_delay_locator", False)
-                and self._locator_name is None
-                and inside):
+        if getattr(self, "_delay_locator", False) and self._locator_name is None and inside:
             self._locator_name = _create_locator()
             if self._locator_name is not None:
                 self._publish_bbox_to_locator()
@@ -1172,13 +1190,15 @@ class DragSession(QObject):
         cur_px = (local.x(), local.y(), inside)
         if inside and cur_px != last_px:
             has_hit, loc, normal, on_floor = _raycast_scene(local.x(), local.y())
-            if (loc != _active_state.location
-                    or has_hit != _active_state.has_hit
-                    or on_floor != _active_state.hit_floor
-                    or normal != _active_state.surface_normal):
-                _active_state.location       = loc
-                _active_state.has_hit        = has_hit
-                _active_state.hit_floor      = on_floor
+            if (
+                loc != _active_state.location
+                or has_hit != _active_state.has_hit
+                or on_floor != _active_state.hit_floor
+                or normal != _active_state.surface_normal
+            ):
+                _active_state.location = loc
+                _active_state.has_hit = has_hit
+                _active_state.hit_floor = on_floor
                 _active_state.surface_normal = normal
                 position_changed = True
         self._last_cursor_px = cur_px
@@ -1189,23 +1209,19 @@ class DragSession(QObject):
 
         try:
             import maya.cmds as cmds
+
             if position_changed:
                 loc = _active_state.location
                 nrm = _active_state.surface_normal
-                cmds.setAttr(self._locator_name + ".location",
-                             loc[0], loc[1], loc[2], type="double3")
-                cmds.setAttr(self._locator_name + ".hasHit",
-                             bool(_active_state.has_hit))
-                cmds.setAttr(self._locator_name + ".hitFloor",
-                             bool(_active_state.hit_floor))
+                cmds.setAttr(self._locator_name + ".location", loc[0], loc[1], loc[2], type="double3")
+                cmds.setAttr(self._locator_name + ".hasHit", bool(_active_state.has_hit))
+                cmds.setAttr(self._locator_name + ".hitFloor", bool(_active_state.hit_floor))
                 try:
-                    cmds.setAttr(self._locator_name + ".surfaceNormal",
-                                 nrm[0], nrm[1], nrm[2], type="double3")
+                    cmds.setAttr(self._locator_name + ".surfaceNormal", nrm[0], nrm[1], nrm[2], type="double3")
                 except Exception:
                     pass
             if rotation_changed:
-                cmds.setAttr(self._locator_name + ".rotationY",
-                             _active_state.rotation_y)
+                cmds.setAttr(self._locator_name + ".rotationY", _active_state.rotation_y)
         except Exception as exc:
             if self._tick_count <= 3:
                 log.warning("Failed to push locator state: %s", exc)
@@ -1223,6 +1239,7 @@ class DragSession(QObject):
             return
         try:
             import maya.cmds as cmds
+
             bmn = _active_state.bbox_min
             bmx = _active_state.bbox_max
             cmds.setAttr(self._locator_name + ".bboxMin", bmn[0], bmn[1], bmn[2], type="double3")
@@ -1237,10 +1254,9 @@ class DragSession(QObject):
             return
         try:
             from bk_maya.core import locator_state as plc
-            plc.set_proxor_lines(self._locator_name,
-                                 list(_active_state.proxor_lines or []))
-            plc.set_proxor_mesh(self._locator_name,
-                                list(_active_state.proxor_mesh or []))
+
+            plc.set_proxor_lines(self._locator_name, list(_active_state.proxor_lines or []))
+            plc.set_proxor_mesh(self._locator_name, list(_active_state.proxor_mesh or []))
             # Seed the label with the asset name; status fills in once
             # the download controller starts firing progress events.
             asset_name = ""
@@ -1253,16 +1269,17 @@ class DragSession(QObject):
             # regardless of camera framing or draw-override font availability.
             try:
                 import maya.cmds as cmds
-                msg = (f"<hl>{asset_name}</hl><br>Ready to drop"
-                       if asset_name else "Ready to drop")
-                cmds.inViewMessage(amg=msg, pos="topCenter", fade=False,
-                                   clear="topCenter", fontSize=14)
+
+                msg = f"<hl>{asset_name}</hl><br>Ready to drop" if asset_name else "Ready to drop"
+                cmds.inViewMessage(amg=msg, pos="topCenter", fade=False, clear="topCenter", fontSize=14)
             except Exception:
                 pass
-            log.info("[PROXOR] published %d polyline(s), %d mesh-vert(s) on %s",
-                     len(_active_state.proxor_lines or []),
-                     len(_active_state.proxor_mesh or []),
-                     self._locator_name)
+            log.info(
+                "[PROXOR] published %d polyline(s), %d mesh-vert(s) on %s",
+                len(_active_state.proxor_lines or []),
+                len(_active_state.proxor_mesh or []),
+                self._locator_name,
+            )
         except Exception as exc:
             log.debug("Could not publish proxor data: %s", exc)
 
@@ -1329,6 +1346,7 @@ class DragSession(QObject):
                     pass
 
         import threading
+
         threading.Thread(
             target=_worker,
             name=f"bk-prxc-fetch-{asset_base_id[:8]}",
@@ -1345,15 +1363,14 @@ class DragSession(QObject):
             log.debug("Proxor swap-in parse failed: %s", exc)
             return
         lines = payload.get("lines", [])
-        mesh  = payload.get("mesh", [])
+        mesh = payload.get("mesh", [])
         if not lines and not mesh:
             return
         _active_state.proxor_lines = lines
-        _active_state.proxor_mesh  = mesh
+        _active_state.proxor_mesh = mesh
         self._publish_proxor_to_locator()
         _refresh_viewport(light=True)
-        log.info("[PROXOR] live swap-in: %d segments, %d mesh-verts",
-                 len(lines), len(mesh))
+        log.info("[PROXOR] live swap-in: %d segments, %d mesh-verts", len(lines), len(mesh))
 
     def _on_wheel(self, event: QEvent) -> bool:
         # We accept wheel events anywhere while a drag session is active
@@ -1376,15 +1393,15 @@ class DragSession(QObject):
             gp = QCursor.pos()
         except Exception:
             gp = None
-        if vp is not None and gp is not None:
-            if not vp.rect().contains(vp.mapFromGlobal(gp)):
-                return False
+        if vp is not None and gp is not None and not vp.rect().contains(vp.mapFromGlobal(gp)):
+            return False
 
         step = -WHEEL_STEP if delta > 0 else WHEEL_STEP
         _active_state.rotation_y += step
         if self._locator_name is not None:
             try:
                 import maya.cmds as cmds
+
                 cmds.setAttr(self._locator_name + ".rotationY", _active_state.rotation_y)
             except Exception as exc:
                 log.warning("Failed to set rotationY on locator: %s", exc)
@@ -1406,6 +1423,7 @@ class DragSession(QObject):
         if self._locator_name is not None:
             try:
                 import maya.cmds as cmds
+
                 cmds.setAttr(self._locator_name + ".downloadState", 1)  # downloading
                 self._download_started = True
                 log.warning("[DROP] setAttr locator=%s downloadState=1 (downloading)", self._locator_name)
@@ -1416,18 +1434,21 @@ class DragSession(QObject):
         self._cleanup()
 
     def _trigger_download(self) -> None:
-        loc   = _active_state.location
+        loc = _active_state.location
         rot_y = _active_state.rotation_y
         asset = _active_state.asset_data
         log.info(
             "BK drop: '%s' at (%.3f, %.3f, %.3f) rot_y=%.1f°",
             asset.get("name", "?"),
-            loc[0], loc[1], loc[2],
+            loc[0],
+            loc[1],
+            loc[2],
             rot_y,
         )
         # Try the real download module if it exists; otherwise log a stub.
         try:
             import importlib
+
             bk_dl = importlib.import_module("bk_maya.core.download")
             # inverse rotation
             bk_dl.download_asset(
@@ -1439,9 +1460,10 @@ class DragSession(QObject):
             )
         except ModuleNotFoundError:
             log.info(
-                "download module not implemented yet – stub only. "
-                "Asset '%s' would be placed at %s rot_y=%.1f°",
-                asset.get("name", "?"), loc, rot_y,
+                "download module not implemented yet - stub only. Asset '%s' would be placed at %s rot_y=%.1f°",
+                asset.get("name", "?"),
+                loc,
+                rot_y,
             )
         except Exception as exc:
             log.error("Download dispatch failed: %s", exc)
@@ -1456,6 +1478,7 @@ class DragSession(QObject):
             abid = (_active_state.asset_data or {}).get("assetBaseId", "")
             if abid:
                 from bk_maya.core import client_lib
+
                 client_lib.prxc_registry.unregister(abid)
         except Exception:
             pass
@@ -1496,6 +1519,7 @@ class DragSession(QObject):
         # Clear the persistent HUD hint.
         try:
             import maya.cmds as cmds
+
             cmds.inViewMessage(clear="botCenter")
             cmds.inViewMessage(clear="topCenter")
         except Exception:
@@ -1510,15 +1534,18 @@ class DragSession(QObject):
 # Public entry point
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 def start_drag(asset_data: dict[str, Any], thumb_path: str) -> None:
     """Entry point for drag from asset bar. Starts drag session, but delays locator creation until mouse enters viewport."""
     DragSession.get().start(asset_data, thumb_path, delay_locator=True)
+
 
 def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     """Place asset at (0,0,0) immediately (no drag)."""
     # Set up state
     global _active_state
     scale = _meters_to_internal()
+
     def _coerce_bbox(v, default):
         if v is None:
             return default
@@ -1533,8 +1560,9 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
             return (float(seq[0]) * scale, float(seq[1]) * scale, float(seq[2]) * scale)
         except (TypeError, ValueError, IndexError):
             return default
-    default_min = (-0.5 * scale, 0.0,        -0.5 * scale)
-    default_max = ( 0.5 * scale, 1.0 * scale, 0.5 * scale)
+
+    default_min = (-0.5 * scale, 0.0, -0.5 * scale)
+    default_max = (0.5 * scale, 1.0 * scale, 0.5 * scale)
     bbox_min = _coerce_bbox(asset_data.get("bbox_min"), default_min)
     bbox_max = _coerce_bbox(asset_data.get("bbox_max"), default_max)
     sw_min = (bbox_min[0], bbox_min[2], bbox_min[1])
@@ -1543,15 +1571,15 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     bbox_max = tuple(max(sw_min[i], sw_max[i]) for i in range(3))
     _prxc = _load_proxor_payload(asset_data)
     _active_state = _State(
-        asset_data   = asset_data,
-        thumb_path   = thumb_path,
-        bbox_min     = bbox_min,
-        bbox_max     = bbox_max,
-        location     = (0.0, 0.0, 0.0),
-        rotation_y   = 0.0,
-        active       = True,
-        proxor_lines = _prxc.get("lines", []),
-        proxor_mesh  = _prxc.get("mesh", []),
+        asset_data=asset_data,
+        thumb_path=thumb_path,
+        bbox_min=bbox_min,  # type: ignore
+        bbox_max=bbox_max,  # type: ignore
+        location=(0.0, 0.0, 0.0),
+        rotation_y=0.0,
+        active=True,
+        proxor_lines=_prxc.get("lines", []),
+        proxor_mesh=_prxc.get("mesh", []),
     )
     log.info("Place at origin: asset=%s bbox_min=%s bbox_max=%s", asset_data.get("name", "?"), bbox_min, bbox_max)
     # Create locator and hand ownership to the download controller via
@@ -1565,6 +1593,7 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     session._download_started = True  # tell _cleanup not to delete it
     try:
         import maya.cmds as cmds
+
         if locator and cmds.objExists(locator):
             cmds.setAttr(locator + ".location", 0.0, 0.0, 0.0, type="float3")
             cmds.setAttr(locator + ".hasHit", True)
@@ -1585,7 +1614,7 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
         pass
     if not _active_state.proxor_lines and not _active_state.proxor_mesh:
         try:
-            _start_proxor_fetch_for_locator(asset_data, locator)
+            _start_proxor_fetch_for_locator(asset_data, locator)  # type: ignore
         except Exception as exc:
             log.debug("place_at_origin: proxor fetch failed: %s", exc)
 
@@ -1597,4 +1626,3 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     _active_state.active = False
     session._locator_name = None
     session._download_started = False
-

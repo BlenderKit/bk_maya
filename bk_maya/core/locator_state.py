@@ -14,7 +14,6 @@ read from and write into.
 
 from __future__ import annotations
 
-
 # Per-locator proxor wire-frame snapshots (list of polylines).
 proxor_registry: dict[str, list] = {}
 

@@ -17,29 +17,25 @@ dev = [
     "bandit>=1.9.4", # code is currently invalid for bandit
     "ruff>=0.15.6", # code is currently invalid for ruff
     "pydoclint>=0.8.3", # code is currently invalid for pydoclint
+    "pre-commit>=3.7.0",
 ]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 120
-include = ["pyproject.toml",
-    "**/*.py",
-    "*.py"
-    ]
-exclude = [
-  "lib",
+include = ["**/*.py"]
+extend-exclude = [
+  "bk_maya/lib",         # vendored third-party packages
+  "bk_maya/bk_proxor",   # git submodule, lints in its own repo
   "out",
   "addon_updater.py",
   "addon_updater_ops.py",
-  "_debug/**",
-  "_bck/**",
+  "_debug",
+  "_bck",
   "*.tmp",
-  "__pycache__/**",
-  ".venv/**",
+  "__pycache__",
+  ".venv",
   "*.pyi",
-]
-ignore = [
-    "E501", # Line too long
 ]
 
 [tool.ruff.format]
@@ -54,11 +50,84 @@ select = ["F", "E", "W", "C90", "I", "N", "D", "UP", "S1", "S2", "S3", "S5", "BL
 ]
 
 ignore = [
-    "D105", # https://docs.astral.sh/ruff/rules/undocumented-magic-method/
-    "D107", # https://docs.astral.sh/ruff/rules/undocumented-public-init/
-    "PLC0415", # https://docs.astral.sh/ruff/rules/import-outside-top-level/
-    "RET504", # https://docs.astral.sh/ruff/rules/unnecessary-assign/
+    # ── Style / docstrings ────────────────────────────────────────────────
+    "E501",     # line-too-long (handled by ruff format)
+    "D100",     # undocumented-public-module
+    "D101",     # undocumented-public-class
+    "D102",     # undocumented-public-method
+    "D103",     # undocumented-public-function
+    "D104",     # undocumented-public-package
+    "D105",     # undocumented-magic-method
+    "D107",     # undocumented-public-init
+    "D205",     # blank-line-after-summary
+    "D209",     # new-line-after-last-paragraph
+    "D415",     # missing-terminal-punctuation
+    "COM812",   # missing-trailing-comma (conflicts with ruff format)
+    "ERA001",   # commented-out-code (intentional reference snippets)
+
+    # ── Defensive Maya/Qt/Win32 patterns ──────────────────────────────────
+    # Hot-path callbacks (draw overrides, viewport polls, Win32 hooks) MUST
+    # NOT propagate exceptions — Maya unloads the plugin or silently removes
+    # the hook. Broad try/except is intentional and we already log inside.
+    "BLE001",   # blind-except
+    "S110",     # try-except-pass
+    "S112",     # try-except-continue
+    "SIM105",   # suppressible-exception (contextlib.suppress is heavier)
+    "TRY003",   # raise-vanilla-args (long messages are fine here)
+    "TRY300",   # try-consider-else
+    "TRY400",   # error-instead-of-exception
+    "TRY401",   # verbose-log-message
+    "PERF203",  # try-except-in-loop (defensive scene iteration)
+    "S310",     # suspicious-url-open-usage (BlenderKit API only)
+
+    # ── Maya / Qt API conventions ─────────────────────────────────────────
+    "N813",     # camelcase-imported-as-lowercase (`OpenMaya as om2` is canon)
+    "N803",     # invalid-argument-name (Win32 hooks: nCode, wParam, lParam)
+    "N806",     # non-lowercase-variable-in-function (Win32: HOOKPROC)
+    "N802",     # invalid-function-name (Win32 callback naming)
+    "FBT001",   # boolean-type-hint-positional-argument
+    "FBT002",   # boolean-default-value-positional-argument
+    "FBT003",   # boolean-positional-value-in-call (Maya APIs use bool pos args)
+    "PLR0402",  # manual-from-import (`import maya.cmds as cmds` is canon)
+
+    # ── Complexity (orchestration code is naturally branchy) ──────────────
+    "C901",     # complex-structure
+    "PLR0911",  # too-many-return-statements
+    "PLR0912",  # too-many-branches
+    "PLR0913",  # too-many-arguments
+    "PLR0915",  # too-many-statements
+    "PLR2004",  # magic-value-comparison
+    "PLC0415",  # import-outside-top-level (deferred Maya imports)
+
+    # ── Misc ──────────────────────────────────────────────────────────────
+    "RET504",   # unnecessary-assign
+    "SLF001",   # private-member-access (collaborating classes in same package)
+    "ARG001",   # unused-function-argument (callback signatures)
+    "ARG002",   # unused-method-argument (Qt overrides)
+    "ARG005",   # unused-lambda-argument
+    "TID252",   # relative-imports
+    "RUF001",   # ambiguous-unicode-character-string
+    "RUF002",   # ambiguous-unicode-character-docstring
+    "RUF003",   # ambiguous-unicode-character-comment
+    "PLW0602",  # global-variable-not-assigned (Win32 hook state)
+    "PLW0603",  # global-statement (placement drag state, Win32 hook state)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "INP001",   # implicit-namespace-package
+    "S101",     # assert usage in tests
+    "PLR2004",
+    "E402",     # tests may bootstrap sys.path before imports
+    "D",
+]
+"bk_maya/maya_plugin.py" = ["T201", "INP001"]
+"bk_maya/dev.py" = ["T201", "PLW1510", "PLR1722", "INP001"]
+"bk_maya/scripts/**" = ["T201", "INP001", "PLW1510"]
+"bk_maya/plugins/**" = ["E402", "T201", "INP001"]
+"bk_maya/ui/placement.py" = ["E402"]   # plugin-loaded sys.path bootstrap
+"client/tools/**" = ["T201", "INP001"]
+".github/**" = ["T201", "INP001"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

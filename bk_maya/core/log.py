@@ -34,7 +34,7 @@ class BlenderKitFormatter(logging.Formatter):
     Permanent tokens (40 chars)  → ``*****``
     """
 
-    EMOJIS = {
+    EMOJIS = {  # noqa: RUF012
         logging.DEBUG:    "🐞 ",
         logging.INFO:     "ℹ️  ",
         logging.WARNING:  "⚠️  ",

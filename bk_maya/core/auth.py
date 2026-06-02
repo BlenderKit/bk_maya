@@ -187,7 +187,7 @@ def login(timeout: float = 180.0) -> bool:
     global _login_error
 
     client_lib.ensure_running()
-    port = client_lib._active_port  # noqa: SLF001
+    port = client_lib._active_port
     if not port:
         log.error("Client not running; cannot start login.")
         return False

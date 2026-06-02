@@ -17,6 +17,10 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from qtpy.QtGui import QPixmap
 
 log = logging.getLogger(__name__)
 
@@ -31,12 +35,13 @@ _ICON_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"
 # Cache
 # ---------------------------------------------------------------------------
 
-_cache: dict[str, "QPixmap"] = {}   # name (no ext) → QPixmap
+_cache: dict[str, QPixmap] = {}  # name (no ext) → QPixmap
 
 
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
+
 
 def icon_path(name: str, ext: str = "png") -> str:
     """Return the absolute filesystem path for icon *name*.
@@ -47,7 +52,7 @@ def icon_path(name: str, ext: str = "png") -> str:
     return os.path.join(_ICON_DIR, f"{name}.{ext}")
 
 
-def icon(name: str, ext: str = "png", size: int | None = None) -> "QPixmap":
+def icon(name: str, ext: str = "png", size: int | None = None) -> QPixmap:
     """Return a (cached) ``QPixmap`` for icon *name*.
 
     If the file is missing a placeholder transparent pixmap is returned so
@@ -63,8 +68,8 @@ def icon(name: str, ext: str = "png", size: int | None = None) -> "QPixmap":
         If given, the pixmap is scaled to *size × size* (keeping aspect ratio).
     """
     # Lazy Qt import — only available inside Maya / after Qt is initialised.
-    from qtpy.QtGui import QPixmap
     from qtpy.QtCore import Qt
+    from qtpy.QtGui import QPixmap
 
     cache_key = f"{name}.{ext}"
     pix = _cache.get(cache_key)
@@ -87,16 +92,16 @@ def icon(name: str, ext: str = "png", size: int | None = None) -> "QPixmap":
     return pix
 
 
-def notready_pixmap(size: int) -> "QPixmap":
+def notready_pixmap(size: int) -> QPixmap:
     """Return the ``thumbnail_notready.jpg`` scaled to *size × size*."""
     return icon("thumbnail_notready", ext="jpg", size=size)
 
 
-def not_available_pixmap(size: int) -> "QPixmap":
+def not_available_pixmap(size: int) -> QPixmap:
     """Return the ``thumbnail_not_available.jpg`` scaled to *size × size*."""
     return icon("thumbnail_not_available", ext="jpg", size=size)
 
 
-def logo_pixmap(size: int = 32) -> "QPixmap":
+def logo_pixmap(size: int = 32) -> QPixmap:
     """Return the BlenderKit logo scaled to *size × size*."""
     return icon("blenderkit_logo", size=size)
