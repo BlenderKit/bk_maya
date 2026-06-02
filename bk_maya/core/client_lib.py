@@ -685,6 +685,10 @@ class _ThumbRegistry:
                 # Fire outside the lock
                 pass
             else:
+                if path:
+                    # Stale entry — file vanished; drop so future deliver
+                    # for this id can still wake us up.
+                    self._cached.pop(asset_base_id, None)
                 self._cbs[asset_base_id] = cb
                 return
         try:

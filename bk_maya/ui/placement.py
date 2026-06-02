@@ -1440,7 +1440,25 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
         proxor_lines = _load_proxor_lines(asset_data),
     )
     log.info("Place at origin: asset=%s bbox_min=%s bbox_max=%s", asset_data.get("name", "?"), bbox_min, bbox_max)
-    # Create locator, trigger download immediately
+    # Create locator and hand ownership to the download controller via
+    # DragSession.  Without registering the locator on the session, the
+    # download module would receive an empty locator_name and could
+    # neither update the label/progress nor delete it when finished —
+    # leaving a stuck red bounding box at the origin.
     locator = _create_locator()
-    DragSession.get()._trigger_download()
-    DragSession.get()._cleanup()
+    session = DragSession.get()
+    session._locator_name = locator
+    session._download_started = True  # tell _cleanup not to delete it
+    try:
+        import maya.cmds as cmds
+        if locator and cmds.objExists(locator):
+            cmds.setAttr(locator + ".location", 0.0, 0.0, 0.0, type="float3")
+            cmds.setAttr(locator + ".hasHit", True)
+            try:
+                cmds.setAttr(locator + ".downloadState", 1)  # downloading
+            except Exception:
+                pass
+    except Exception as exc:
+        log.debug("place_at_origin: locator attr setup failed: %s", exc)
+    session._trigger_download()
+    session._cleanup()

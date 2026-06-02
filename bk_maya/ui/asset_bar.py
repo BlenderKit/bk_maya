@@ -37,6 +37,7 @@ from qtpy.QtWidgets import (
     QLabel, QFrame, QButtonGroup, QStackedWidget,
     QCheckBox, QSpinBox, QSizePolicy, QDialog,
     QTextEdit, QAction, QMenu, QFormLayout, QComboBox,
+    QLayout,
 )
 
 from ..core import auth, search as bk_search
@@ -180,6 +181,9 @@ class AssetDetailDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
+        # Auto-fit the dialog to its content (eliminates empty vertical gaps).
+        root.setSizeConstraint(QLayout.SetMinimumSize)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
         # ── Header row: thumbnail + quick info ────────────────────────────
         header = QHBoxLayout()
@@ -220,14 +224,35 @@ class AssetDetailDialog(QDialog):
             info_layout.addRow(lbl, val)
 
         _row("Name",      asset.get("name", ""))
-        _row("Author",    (asset.get("author", {}) or {}).get("fullName", "")
-                          or asset.get("authorUsername", ""))
+        author = asset.get("author", {}) or {}
+        author_name = author.get("fullName", "") or asset.get("authorUsername", "")
+        _row("Author",    author_name)
         _row("Type",      (asset.get("assetType") or "").capitalize())
         is_free = asset.get("isFree", False)
         price   = asset.get("priceExVatFormatted") or asset.get("price")
         _row("Price",     "FREE" if is_free else (str(price) if price else "—"))
         _row("License",   _license_label(asset))
         _row("Downloads", str(asset.get("downloadCount") or ""))
+
+        # Average rating (BlenderKit returns ``ratingsAverage`` as dict
+        # ``{"quality": x, "working_hours": y}`` and ``ratingsCount`` similarly).
+        rat_avg = asset.get("ratingsAverage") or {}
+        rat_cnt = asset.get("ratingsCount")   or {}
+        if isinstance(rat_avg, dict):
+            avg_q = rat_avg.get("quality")
+        else:
+            avg_q = rat_avg
+        cnt_q = rat_cnt.get("quality") if isinstance(rat_cnt, dict) else rat_cnt
+        if avg_q:
+            try:
+                avg_f = float(avg_q)
+                # BlenderKit uses a 1..10 scale (same as the Blender addon).
+                filled = max(0, min(10, int(round(avg_f))))
+                stars  = "★" * filled + "☆" * (10 - filled)
+                _row("Rating", f"<span style='color:#f5c33b'>{stars}</span>  "
+                               f"{avg_f:.1f}  ({cnt_q or 0})")
+            except (TypeError, ValueError):
+                pass
 
         # Licence icon next to label
         lic_icon = _license_icon_pix(asset, 16)
@@ -247,11 +272,18 @@ class AssetDetailDialog(QDialog):
         desc = asset.get("description", "")
         if desc:
             root.addWidget(QLabel("<b>Description</b>"))
-            desc_edit = QTextEdit()
-            desc_edit.setPlainText(desc)
-            desc_edit.setReadOnly(True)
-            desc_edit.setMaximumHeight(100)
-            root.addWidget(desc_edit)
+            desc_lbl = QLabel(desc)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setTextInteractionFlags(
+                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+            )
+            desc_lbl.setStyleSheet(
+                "QLabel { background: #252525; color: #dedede; "
+                "         border: 1px solid #444; padding: 6px; }"
+            )
+            desc_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+            desc_lbl.setMinimumWidth(380)
+            root.addWidget(desc_lbl)
 
         # ── Tags ────────────────────────────────────────────────────────────
         tags: list[str] = asset.get("tags") or []
@@ -261,9 +293,37 @@ class AssetDetailDialog(QDialog):
             tag_lbl.setStyleSheet("color: #aaa; font-size: 11px;")
             root.addWidget(tag_lbl)
 
+        # ── Your rating (click stars to rate) ───────────────────────────────
+        if asset_id and auth.is_logged_in():
+            self._rate_status = QLabel("")
+            self._rate_status.setStyleSheet("color: #888; font-size: 11px;")
+            rate_row = QHBoxLayout()
+            rate_row.setSpacing(2)
+            rate_row.addWidget(QLabel("<b>Your rating:</b>"))
+            self._star_labels: list[QLabel] = []
+            for i in range(1, 11):
+                star = QLabel("☆")
+                star.setStyleSheet(
+                    "QLabel { color: #f5c33b; font-size: 18px; padding: 0 1px; }"
+                )
+                star.setCursor(Qt.PointingHandCursor)
+                star.mousePressEvent = lambda ev, n=i: self._submit_rating(n)  # type: ignore[assignment]
+                self._star_labels.append(star)
+                rate_row.addWidget(star)
+            rate_row.addWidget(self._rate_status, 1)
+            root.addLayout(rate_row)
+
         # ── Action buttons ─────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+
+        author_id = author.get("id")
+        if author_id:
+            author_btn = QPushButton(f"More by {author_name or 'this author'}")
+            author_btn.clicked.connect(
+                lambda: self._trigger_author_search(int(author_id), author_name)
+            )
+            btn_row.addWidget(author_btn)
 
         slug = asset.get("slug", "") or asset_id
         if slug:
@@ -277,6 +337,48 @@ class AssetDetailDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
+
+    # ── Rating + author-search helpers ──────────────────────────────────────
+
+    def _submit_rating(self, score: int) -> None:
+        # The rating endpoint expects the asset version ``id``
+        # (``/api/v1/assets/<id>/rating/...``), not ``assetBaseId``.
+        asset_id = self._asset.get("id") or self._asset.get("assetBaseId", "")
+        if not asset_id:
+            return
+        # Optimistic UI: fill stars now.
+        for idx, lbl in enumerate(getattr(self, "_star_labels", []), start=1):
+            lbl.setText("★" if idx <= score else "☆")
+        self._rate_status.setText("Submitting…")
+
+        api_key = auth.get_api_key() or ""
+
+        def _worker() -> None:
+            try:
+                from ..api import client as api_client
+                api_client.rate_asset(asset_id, "quality", float(score), api_key)
+                msg, ok = (f"Rated {score}/10", True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Rating submission failed: %s", exc)
+                msg, ok = (f"Failed: {exc}", False)
+
+            def _apply() -> None:
+                if not hasattr(self, "_rate_status"):
+                    return
+                self._rate_status.setText(msg)
+                if not ok:
+                    # Revert stars on failure.
+                    for lbl in getattr(self, "_star_labels", []):
+                        lbl.setText("☆")
+            QTimer.singleShot(0, _apply)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _trigger_author_search(self, author_id: int, author_name: str) -> None:
+        if _current_bar is not None:
+            _current_bar.search_by_author(author_id, author_name)
+        self.accept()
 
     def show_near_cursor(self) -> None:
         """Show dialog near the current cursor, clamped to screen."""
@@ -465,6 +567,11 @@ class AssetTile(QFrame):
                 self._on_thumb_ready(cached)
             else:
                 client_lib.thumb_registry.register(self._asset_id, self._on_thumb_ready)
+                # Watchdog: if the report poller missed the delivery
+                # (e.g. tile created after the task was popped), re-probe
+                # the cache that the client wrote.
+                QTimer.singleShot(2500, self._recheck_cached_thumb)
+                QTimer.singleShot(6000, self._recheck_cached_thumb)
 
     def resize_to(self, cell_w: int) -> None:
         """Resize for reflow without losing loaded state."""
@@ -496,6 +603,17 @@ class AssetTile(QFrame):
         detail_act = QAction("Asset detail…", menu)
         detail_act.triggered.connect(self._open_detail)
         menu.addAction(detail_act)
+
+        author = (self._asset.get("author") or {})
+        author_id = author.get("id")
+        bar = _current_bar
+        if author_id and bar is not None:
+            author_name = author.get("fullName", "") or "this author"
+            author_act = QAction(f"Search by {author_name}", menu)
+            author_act.triggered.connect(
+                lambda: bar.search_by_author(int(author_id), author_name)
+            )
+            menu.addAction(author_act)
 
         slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
         if slug:
@@ -588,21 +706,51 @@ class AssetTile(QFrame):
         self._apply_pix(path)
         client_lib.thumb_registry.unregister(self._asset_id)
 
+    def _recheck_cached_thumb(self) -> None:
+        """Watchdog: re-probe the on-disk cache the client wrote.
+
+        Handles the race where the client's ``thumbnail_download`` task
+        was dispatched before this tile registered (so the callback
+        never fired), but the file exists on disk.
+        """
+        if self._thumb_path or self._is_placeholder or not self._asset:
+            return
+        tempdir = bk_search.get_tempdir(self._asset.get("assetType") or "model")
+        cached = self._find_cached_thumb(tempdir, self._asset)
+        if cached:
+            self._on_thumb_ready(cached)
+
     @staticmethod
     def _find_cached_thumb(tempdir: str, asset: dict[str, Any]) -> str:
-        """Return a previously-downloaded small thumbnail path, or ''.
+        """Return a previously-downloaded thumbnail path, or ''.
 
-        The client names files after the URL's basename, so probe the most
-        likely candidates without scanning the whole directory.
+        The Go client writes thumbnails with URL-encoded basenames
+        (``,`` → ``%2C``); also try common variants and the larger
+        ``Middle`` thumb as a fallback before giving up.
         """
-        url = asset.get("thumbnailSmallUrlWebp") or asset.get("thumbnailSmallUrl") or ""
-        if not url:
-            return ""
-        basename = url.rsplit("/", 1)[-1].split("?", 1)[0]
-        if not basename:
-            return ""
-        path = os.path.join(tempdir, basename)
-        return path if os.path.exists(path) else ""
+        import urllib.parse as _up
+        candidates: list[str] = []
+        for key in (
+            "thumbnailSmallUrlWebp",
+            "thumbnailSmallUrl",
+            "thumbnailMiddleUrlWebp",
+            "thumbnailMiddleUrl",
+        ):
+            url = asset.get(key) or ""
+            if not url:
+                continue
+            raw = url.rsplit("/", 1)[-1].split("?", 1)[0]
+            if not raw:
+                continue
+            candidates.append(raw)
+            quoted = _up.quote(raw, safe="")
+            if quoted != raw:
+                candidates.append(quoted)
+        for name in candidates:
+            p = os.path.join(tempdir, name)
+            if os.path.exists(p):
+                return p
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +823,7 @@ class AssetGrid(QWidget):
         self._design_year_min: int  = 0
         self._design_year_max: int  = 0
         self._geometry_nodes:  bool = False
+        self._extra_filters:   dict[str, Any] = {}
 
         self._tiles:     list[AssetTile] = []
         self._next_fill: int = 0
@@ -789,6 +938,7 @@ class AssetGrid(QWidget):
             geometry_nodes  = self._geometry_nodes,
             page_size       = PAGE_SIZE,
             next_url        = self._next_url,
+            extra_filters   = self._extra_filters or None,
             on_results      = self._bridge.results_ready.emit,
             on_error        = self._bridge.error_occurred.emit,
         )
@@ -891,6 +1041,7 @@ class AssetGrid(QWidget):
             design_year_max = design_year_max,
             geometry_nodes  = geometry_nodes,
             page_size       = PAGE_SIZE,
+            extra_filters   = self._extra_filters or None,
             on_results      = self._bridge.results_ready.emit,
             on_error        = self._bridge.error_occurred.emit,
         )
@@ -898,6 +1049,10 @@ class AssetGrid(QWidget):
     def set_tile_size(self, size: int) -> None:
         self._last_vw = 0
         self._do_reflow()
+
+    def set_extra_filters(self, extra: dict[str, Any] | None) -> None:
+        """Replace the active per-search filter dict (e.g. ``author_id``)."""
+        self._extra_filters = dict(extra) if extra else {}
 
     # ── Internals ─────────────────────────────────────────────────────────
 
@@ -1680,6 +1835,9 @@ class AssetBarWidget(QWidget):
         self._login_banner.setVisible(True)
 
     def _on_search(self, query: str, asset_type: str) -> None:
+        # User-initiated search via the search bar clears any sticky filters
+        # (such as the author filter set by "Search by author").
+        self._grid.set_extra_filters(None)
         self._grid.start_search(
             query, asset_type,
             free_only       = self._filters.free_only,
@@ -1740,6 +1898,35 @@ class AssetBarWidget(QWidget):
             design_year_max = self._filters.design_year_max,
             geometry_nodes  = self._filters.geometry_nodes,
         )
+
+
+    def search_by_author(self, author_id: int, author_name: str = "") -> None:
+        """Reset the search bar and show only assets by the given author."""
+        try:
+            self._search_bar._input.clear()  # noqa: SLF001
+        except Exception:
+            pass
+        self._grid.set_extra_filters({"author_id": author_id})
+        self._grid.start_search(
+            "",
+            self._search_bar.current_asset_type,
+            free_only       = self._filters.free_only,
+            quality_limit   = self._filters.quality_limit,
+            license_filter  = self._filters.license_filter,
+            animated_only   = self._filters.animated_only,
+            texture_res_min = self._filters.tex_res_min,
+            texture_res_max = self._filters.tex_res_max,
+            file_size_min   = self._filters.file_size_min,
+            file_size_max   = self._filters.file_size_max,
+            poly_count_min  = self._filters.poly_count_min,
+            poly_count_max  = self._filters.poly_count_max,
+            style           = self._filters.model_style,
+            condition       = self._filters.condition,
+            design_year_min = self._filters.design_year_min,
+            design_year_max = self._filters.design_year_max,
+            geometry_nodes  = self._filters.geometry_nodes,
+        )
+        log.info("Search-by-author: id=%s name=%r", author_id, author_name)
 
 
 # ---------------------------------------------------------------------------

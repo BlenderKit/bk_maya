@@ -103,16 +103,14 @@ def _resolution_from_path(path: str) -> str:
 def _texture_subdir(blend_path: str, max_resolution: str = "") -> tuple[str, str]:
     """Return ``(rel_dir, abs_dir)`` for the textures subfolder next to *blend_path*.
 
-    ``rel_dir`` uses Blender's ``//``-relative-to-blend convention (e.g.
-    ``//textures_2k/``). Matches addon behaviour exactly — keeps the .blend
-    portable AND tells ``wm.usd_export`` the path is already next to the
-    blend, so it doesn't create its own ``textures/`` folder and copy files.
+    Always ``//textures/`` (no resolution suffix). The BlenderKit-Maya cache
+    is one folder per (asset, resolution), so resolution disambiguation is
+    already handled at the directory level. Crucially, Blender's
+    ``wm.usd_export`` MaterialX path always authors texture asset paths as
+    ``./textures/<basename>`` regardless of ``image.filepath``, so the
+    unpacked files MUST land in a folder literally named ``textures``.
     """
-    res = _resolution_from_path(blend_path)
-    if res == "blend" and max_resolution:
-        res = _RES_PROP_TO_KEY.get(str(max_resolution), "blend")
-    suffix = _RES_SUFFIX.get(res, "")
-    rel_dir = f"//textures{suffix}/"
+    rel_dir = "//textures/"
     abs_dir = bpy.path.abspath(rel_dir, start=os.path.dirname(blend_path) + os.sep)
     return rel_dir, abs_dir
 
@@ -609,6 +607,248 @@ def _force_single_material_per_mesh() -> None:
     log(f"force-single: reduced {forced} mesh(es) to single material")
 
 
+def _remove_empty_uv_layers() -> None:
+    """Drop UV layers that contain no usable data.
+
+    A layer is considered empty if every UV is at (0, 0) or every face
+    has zero UV area (a bake/scratch layer that was never unwrapped).
+    Never removes the last remaining layer, and never removes a layer
+    referenced by a ``ShaderNodeUVMap`` in any of the mesh's materials.
+    """
+    removed_total = 0
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        mesh = obj.data
+        layers = mesh.uv_layers
+        if len(layers) <= 1 or not mesh.polygons:
+            continue
+
+        # Names referenced by shader UV-Map nodes (never delete these).
+        referenced: set[str] = set()
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or not mat.use_nodes or mat.node_tree is None:
+                continue
+            for node in mat.node_tree.nodes:
+                if node.bl_idname == "ShaderNodeUVMap" and node.uv_map:
+                    referenced.add(node.uv_map)
+
+        to_remove = []
+        for lyr in list(layers):
+            if lyr.name in referenced:
+                continue
+            data = lyr.data
+            # All-zero check: very cheap, catches the common case.
+            all_zero = True
+            for d in data:
+                u, v = d.uv
+                if u != 0.0 or v != 0.0:
+                    all_zero = False
+                    break
+            if all_zero:
+                to_remove.append(lyr.name)
+                continue
+            # Zero-area check: every face has degenerate UVs.
+            any_area = False
+            for poly in mesh.polygons:
+                start = poly.loop_start
+                n = poly.loop_total
+                if n < 3:
+                    continue
+                # Shoelace area.
+                area = 0.0
+                u0, v0 = data[start].uv
+                for i in range(1, n - 1):
+                    u1, v1 = data[start + i].uv
+                    u2, v2 = data[start + i + 1].uv
+                    area += abs((u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0))
+                if area > 1e-12:
+                    any_area = True
+                    break
+            if not any_area:
+                to_remove.append(lyr.name)
+
+        # Keep at least one layer.
+        if len(to_remove) >= len(layers):
+            to_remove = to_remove[: len(layers) - 1]
+
+        for name in to_remove:
+            try:
+                layers.remove(layers[name])
+                removed_total += 1
+            except Exception as exc:  # noqa: BLE001
+                log(f"remove-empty-uv: failed on {obj.name!r}/{name!r}: {exc}")
+
+        if to_remove:
+            log(f"remove-empty-uv: {obj.name!r} dropped {to_remove}")
+
+    log(f"remove-empty-uv: removed {removed_total} empty layer(s)")
+
+
+def _fix_primary_uv_set() -> None:
+    """Ensure the *correct* UV layer is marked ``active_render`` per mesh.
+
+    Blender's ``wm.usd_export`` exports every UV layer, but the one
+    flagged ``active_render`` becomes the primary ``st`` set in USD —
+    i.e. the one Maya's shaders bind to by default. If an asset's
+    ``active_render`` happens to be a bake/scratch UV (``Bake_Iris``,
+    ``Gradient``, ...), the imported mesh in Maya will use that wrong
+    set and the textures will look mangled.
+
+    Heuristic, in order:
+      1. The UV layer name referenced by a ``ShaderNodeUVMap`` that
+         feeds an Image Texture in any material on the mesh.
+      2. Otherwise the layer currently marked ``active`` (what the
+         artist sees in the UV editor).
+      3. Otherwise ``uv_layers[0]``.
+    """
+    from collections import Counter
+
+    fixed = 0
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        mesh = obj.data
+        layers = mesh.uv_layers
+        if len(layers) == 0:
+            continue
+
+        # 1) gather UV-Map node names driving image textures
+        used_names: Counter = Counter()
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or not mat.use_nodes or mat.node_tree is None:
+                continue
+            nt = mat.node_tree
+            # Find image-texture nodes; walk back along their Vector input
+            # to spot the UVMap node feeding them.
+            for node in nt.nodes:
+                if node.bl_idname != "ShaderNodeTexImage":
+                    continue
+                vec_in = node.inputs.get("Vector")
+                if vec_in is None or not vec_in.is_linked:
+                    continue
+                src = vec_in.links[0].from_node
+                # Walk through Mapping nodes if present
+                while src.bl_idname == "ShaderNodeMapping":
+                    m_in = src.inputs.get("Vector")
+                    if m_in is None or not m_in.is_linked:
+                        src = None  # type: ignore[assignment]
+                        break
+                    src = m_in.links[0].from_node
+                if src is None:
+                    continue
+                if src.bl_idname == "ShaderNodeUVMap" and src.uv_map:
+                    used_names[src.uv_map] += 1
+
+        chosen = ""
+        for name, _ in used_names.most_common():
+            if name in layers:
+                chosen = name
+                break
+
+        # 2) fallback: currently active UV layer
+        if not chosen and layers.active is not None:
+            chosen = layers.active.name
+
+        # 3) fallback: first layer
+        if not chosen:
+            chosen = layers[0].name
+
+        # Apply: mark chosen as both active and active_render.
+        for lyr in layers:
+            lyr.active_render = (lyr.name == chosen)
+        try:
+            layers.active = layers[chosen]
+        except Exception:
+            pass
+
+        # If the chosen layer isn't already index 0, move it there so
+        # USD's first uvset is unambiguously the "main" one.
+        if layers[0].name != chosen and len(layers) > 1:
+            try:
+                # Blender's API lacks a reorder for uv_layers; rebuild
+                # by copying data: simplest portable approach is to
+                # rename to force ordering not reliable. Just trust
+                # active_render — Maya respects the renderable flag.
+                pass
+            except Exception:
+                pass
+
+        fixed += 1
+        if used_names:
+            log(f"primary-uv: {obj.name!r} -> {chosen!r} "
+                f"(from material nodes; candidates={dict(used_names)})")
+        else:
+            log(f"primary-uv: {obj.name!r} -> {chosen!r} (fallback)")
+
+    log(f"primary-uv: fixed {fixed} mesh(es)")
+
+
+def _sanitize_meshes_for_usd_export() -> None:
+    """Rebuild mesh CustomData so the USD exporter writes valid UV indices.
+
+    Blender's ``wm.usd_export`` deduplicates faceVarying UVs into a
+    ``values`` + ``indices`` pair. After destructive mesh ops (separate
+    by material, slot pruning) the CustomData layout can get into a
+    state where the exporter writes the compressed ``values`` array but
+    silently omits the ``indices`` array — making the UVs unusable in
+    Maya (values count != loop count, no indices to gather from).
+
+    Round-tripping through ``object.convert(target='MESH')`` rebuilds
+    the mesh data block from the evaluated depsgraph, producing a clean
+    CustomData layout that the exporter handles correctly.
+
+    Also calls ``mesh.validate()`` + ``mesh.update()`` as belt-and-braces.
+    """
+    scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
+
+    # Work on a stable snapshot of mesh objects.
+    mesh_objs = [o for o in scene.objects if o.type == "MESH" and o.data]
+    if not mesh_objs:
+        return
+
+    # Deselect all, then convert each mesh individually to keep memory
+    # bounded and isolate failures.
+    try:
+        bpy.ops.object.select_all(action="DESELECT")
+    except Exception:
+        pass
+
+    rebuilt = 0
+    failed = 0
+    for obj in mesh_objs:
+        try:
+            # Skip linked / library data we can't convert.
+            if obj.data.library is not None:
+                continue
+            # Select & activate just this object.
+            try:
+                bpy.ops.object.select_all(action="DESELECT")
+            except Exception:
+                pass
+            obj.select_set(True)
+            view_layer.objects.active = obj
+            # Re-bake the mesh from the evaluated depsgraph.
+            bpy.ops.object.convert(target="MESH")
+            mesh = obj.data
+            mesh.validate(verbose=False)
+            mesh.update()
+            rebuilt += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            log(f"sanitize: convert failed for {obj.name!r}: {exc}")
+
+    try:
+        bpy.ops.object.select_all(action="DESELECT")
+    except Exception:
+        pass
+
+    log(f"sanitize: rebuilt {rebuilt} mesh(es), {failed} failed")
+
+
 # ---------------------------------------------------------------------------
 # Main export
 # ---------------------------------------------------------------------------
@@ -661,21 +901,17 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
     _force_single_material_per_mesh()
     progress(0.58, "Single-material per mesh")
 
-    # Diagnostic dump: save the post-destructive state next to the source
-    # so the user can open it in Blender and inspect what the USD exporter
-    # was actually fed. Never overwrites the cached canonical .blend.
-    try:
-        mod_path = os.path.join(
-            os.path.dirname(blend_path) or ".", "modified.blend"
-        )
-        bpy.ops.wm.save_as_mainfile(filepath=mod_path, copy=True, compress=False)
-        try:
-            os.remove(mod_path + "1")
-        except OSError:
-            pass
-        log(f"diagnostic: wrote modified scene -> {mod_path}")
-    except Exception as exc:  # noqa: BLE001
-        log(f"diagnostic: failed to write modified.blend ({exc}); non-fatal")
+    status("Removing empty UV layers")
+    _remove_empty_uv_layers()
+    progress(0.59, "Removed empty UV layers")
+
+    status("Fixing primary UV set")
+    _fix_primary_uv_set()
+    progress(0.60, "Primary UV set fixed")
+
+    status("Sanitizing meshes for USD export")
+    _sanitize_meshes_for_usd_export()
+    progress(0.62, "Sanitized meshes")
 
     status("Generating USD")
     out_dir = os.path.dirname(out_usd) or "."
@@ -685,8 +921,8 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
         filepath=out_usd,
         selected_objects_only=False,
         visible_objects_only=True,
-        export_animation=False,
-        export_hair=False,
+        export_animation=True,
+        export_hair=True,
         export_uvmaps=True,
         export_normals=True,
         export_materials=True,
@@ -724,31 +960,6 @@ def export_to_usd(blend_path: str, out_usd: str, max_resolution: str = "") -> No
 
     bpy.ops.wm.usd_export(**accepted)
     progress(0.99, "exported usd")
-
-    # ------------------------------------------------------------------
-    # Post-export sweep: remove any spurious ``textures/`` folder that
-    # ``wm.usd_export`` may have created next to the .usd despite our
-    # ``export_textures=False`` request. We already wrote a complete
-    # resolution-specific ``textures<suffix>/`` next to the .blend
-    # (which sits in the same directory as the .usd in our cache layout),
-    # so a generic ``textures/`` here is always redundant.
-    # ------------------------------------------------------------------
-    try:
-        _rel_dir, abs_dir = _texture_subdir(blend_path, max_resolution)
-        our_name = os.path.basename(abs_dir.rstrip(os.sep).rstrip("/"))
-        spurious = os.path.join(out_dir, "textures")
-        if (
-            our_name
-            and our_name != "textures"
-            and os.path.isdir(spurious)
-            and os.path.isdir(abs_dir)
-        ):
-            import shutil as _shutil
-            _shutil.rmtree(spurious, ignore_errors=True)
-            log(f"post-export: removed spurious {spurious!r} "
-                f"(canonical textures live in {our_name!r})")
-    except Exception as exc:  # noqa: BLE001
-        log(f"post-export: textures sweep failed (non-fatal): {exc}")
 
 
 # ---------------------------------------------------------------------------

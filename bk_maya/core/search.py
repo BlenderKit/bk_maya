@@ -79,6 +79,7 @@ def search(
     design_year_max: int = 0,
     geometry_nodes: bool = False,
     next_url: str = "",
+    extra_filters: dict[str, Any] | None = None,
     on_results: ResultCallback | None = None,
     on_error: ErrorCallback | None = None,
 ) -> None:
@@ -122,6 +123,8 @@ def search(
         extra["designYear_lte"] = design_year_max
     if geometry_nodes:
         extra["modifiers"] = "nodes"
+    if extra_filters:
+        extra.update(extra_filters)
 
     urlquery = api.build_search_url(
         query=query,

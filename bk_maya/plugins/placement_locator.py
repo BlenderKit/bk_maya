@@ -535,6 +535,13 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         # ── Asset name + current step (3D text floating above the bbox) ─
         label_name   = snap.get("label_name")   or ""
         label_status = snap.get("label_status") or ""
+        # MUIDrawManager.text() corrupts strings with any non-ASCII
+        # codepoint (e.g. U+2026 "…") — it ends up rendering the whole
+        # glyph atlas. Force pure ASCII.
+        def _ascii(s: str) -> str:
+            return s.encode("ascii", "replace").decode("ascii").replace("?", ".")
+        label_name   = _ascii(label_name)
+        label_status = _ascii(label_status)
         if label_name or label_status:
             # Anchor a little above the bbox top so text doesn't z-fight
             # with the wireframe.

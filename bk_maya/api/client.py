@@ -125,6 +125,39 @@ def get_profile(api_key: str) -> dict[str, Any]:
 
 
 # -------------------------------------------------------------------------
+# Ratings
+# -------------------------------------------------------------------------
+
+def rate_asset(
+    asset_id: str,
+    rating_type: str,
+    value: float,
+    api_key: str,
+) -> dict[str, Any]:
+    """POST a rating for an asset.
+
+    ``rating_type`` is typically ``"quality"`` (1..5) or ``"working_hours"``
+    (positive float). Returns the parsed JSON response (empty dict on 204).
+    """
+    if not api_key:
+        raise ValueError("rate_asset requires an API key (must be logged in)")
+    url = f"{API_V1}/assets/{asset_id}/rating/{rating_type}/"
+    try:
+        return _request("PUT", url, data={"score": value}, api_key=api_key)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (200, 201, 202, 204):
+            return {}
+        raise
+
+
+def get_asset_ratings(asset_id: str, api_key: str) -> dict[str, Any]:
+    """Return the current user's submitted ratings for an asset."""
+    if not api_key:
+        return {}
+    return _request("GET", f"{API_V1}/assets/{asset_id}/rating/", api_key=api_key)
+
+
+# -------------------------------------------------------------------------
 # Search endpoint
 # -------------------------------------------------------------------------
 
