@@ -144,11 +144,14 @@ class _Prefs:
     def global_dir_resolved(self) -> str:
         """Return global_dir, falling back to a sensible default.
 
-        Matches the Blender add-on's default: ``~/blenderkit_data``.
+        Matches the Blender addon's ``default_global_dict()``: uses
+        ``$XDG_DATA_HOME/blenderkit_data`` if set (typically Linux),
+        otherwise ``~/blenderkit_data``.
         """
         if self.global_dir:
             return self.global_dir
-        return os.path.expanduser("~/blenderkit_data")
+        home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~")
+        return os.path.join(home, "blenderkit_data")
 
     # ------------------------------------------------------------------
     # Serialisation

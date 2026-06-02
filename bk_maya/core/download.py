@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
-import tempfile
 import time
 from typing import Any, Sequence
 
@@ -49,9 +49,118 @@ log = logging.getLogger(__name__)
 _active_jobs: list["_DownloadController"] = []
 
 
+def _euler_from_normal_and_yaw(
+    normal: Sequence[float],
+    yaw_deg: float,
+) -> tuple[float, float, float]:
+    """Return XYZ Euler angles (degrees) that align local +Y to *normal*
+    and then spin around the normal by *yaw_deg*.
+
+    Mirrors :func:`bk_maya.plugins.placement_locator._local_to_world`
+    so the imported asset lands in exactly the orientation the drag
+    preview showed. Uses Rodrigues to build a rotation matrix and
+    decomposes back to Maya's default XYZ Euler order.
+    """
+    nx, ny, nz = (float(v) for v in normal)
+    n_len = math.sqrt(nx*nx + ny*ny + nz*nz) or 1.0
+    nx, ny, nz = nx/n_len, ny/n_len, nz/n_len
+
+    # Step 1: rotation around local Y (yaw).
+    yr = math.radians(yaw_deg)
+    cy_, sy_ = math.cos(yr), math.sin(yr)
+    # M_yaw rows (column-major application: M*v where v is column).
+    # M_yaw = | c  0  s |
+    #         | 0  1  0 |
+    #         |-s  0  c |
+    yaw = (
+        (cy_, 0.0, sy_),
+        (0.0, 1.0, 0.0),
+        (-sy_, 0.0, cy_),
+    )
+
+    # Step 2: Rodrigues align (0,1,0) -> normal.
+    ax, az = nz, -nx
+    sin2 = ax*ax + az*az
+    if sin2 < 1e-12:
+        if ny >= 0.0:
+            align = (
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        else:
+            # 180° flip
+            align = (
+                (1.0, 0.0,  0.0),
+                (0.0, -1.0, 0.0),
+                (0.0, 0.0, -1.0),
+            )
+    else:
+        sin_t = math.sqrt(sin2)
+        cos_t = ny
+        ax /= sin_t
+        az /= sin_t
+        c = cos_t
+        s = sin_t
+        omc = 1.0 - c
+        # k = (ax, 0, az); standard Rodrigues:
+        align = (
+            (c + ax*ax*omc,  -az*s,         ax*az*omc),
+            (az*s,           c,             -ax*s),
+            (az*ax*omc,      ax*s,          c + az*az*omc),
+        )
+
+    # Combined = align @ yaw (apply yaw first, then align).
+    def _matmul(a, b):
+        return tuple(
+            tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3))
+            for i in range(3)
+        )
+    m = _matmul(align, yaw)
+
+    # Decompose to XYZ Euler (Maya default rotateOrder). Convention:
+    # R = Rx * Ry * Rz applied to a column vector. Maya's xform rotation
+    # input is interpreted in the node's rotateOrder, default XYZ, which
+    # is exactly this composition for the SAME row-major matrix layout.
+    # Stable extraction:
+    sy = -m[2][0]
+    if abs(sy) < 1.0 - 1e-7:
+        ry = math.asin(sy)
+        rx = math.atan2(m[2][1], m[2][2])
+        rz = math.atan2(m[1][0], m[0][0])
+    else:
+        # Gimbal: ry = ±90°
+        ry = math.copysign(math.pi / 2.0, sy)
+        rx = math.atan2(-m[1][2], m[1][1])
+        rz = 0.0
+    return (math.degrees(rx), math.degrees(ry), math.degrees(rz))
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
+
+# Mirror of client/utils.go Slugify / GetAssetDirectoryName / PluralizeAssetType.
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+def _slugify(name: str) -> str:
+    s = _SLUG_RE.sub("-", name.lower()).strip("-")
+    return s[:50] if len(s) > 50 else s
+
+def _pluralize_asset_type(t: str) -> str:
+    return "brushes" if t == "brush" else f"{t}s"
+
+# max_resolution pref → cache filename token (matches the Blender addon).
+_RES_TOKEN = {
+    "512":  "0_5K",
+    "1024": "1K",
+    "2048": "2K",
+    "4096": "4K",
+    "8192": "8K",
+}
+def _resolution_key(max_res: str) -> str:
+    return _RES_TOKEN.get(str(max_res), "")
+
 
 class _DownloadController:
     """One-shot controller for a single asset download."""
@@ -62,14 +171,17 @@ class _DownloadController:
         location: Sequence[float],
         rotation_y: float,
         locator_name: str = "",
+        surface_normal: Sequence[float] = (0.0, 1.0, 0.0),
     ) -> None:
-        self.asset        = asset
-        self.location     = tuple(location)
-        self.rotation_y   = float(rotation_y)
-        self.locator_name = locator_name
+        self.asset          = asset
+        self.location       = tuple(location)
+        self.rotation_y     = float(rotation_y)
+        self.surface_normal = tuple(surface_normal)
+        self.locator_name   = locator_name
         self.job          = BlenderJob()
         self.work_dir     = ""
         self.args_path    = ""
+        self.blend_path   = ""
         self.out_usd      = ""
 
     # ------------------------------------------------------------------
@@ -107,14 +219,33 @@ class _DownloadController:
             return False
         log.info("[BK download] using Blender %s at %s", ".".join(str(x) for x in version), exe)
 
-        # Prepare working files
-        self.work_dir = tempfile.mkdtemp(prefix="bk_maya_dl_")
-        asset_id = self.asset.get("id") or self.asset.get("assetBaseId") or "asset"
-        self.out_usd = os.path.join(self.work_dir, f"{asset_id}.usd")
+        # Use the *same* cache layout as the Go client (see
+        # client/utils.go GetAssetDirectoryName / ServerToLocalFilename):
+        #   <global_dir>/<assetType>s/<slug(name)[:16]>_<id>/
+        #       <slug(name)>_<res>_<id>.blend
+        # so a .blend already pulled in by a previous drag / by the Blender
+        # addon is reused on the next drop and we never create a
+        # "temp_downloads" sidecar folder.
+        asset_id   = str(self.asset.get("id") or self.asset.get("assetBaseId") or "asset")
+        asset_name = str(self.asset.get("name") or self.asset.get("displayName") or "asset")
+        asset_type = str(self.asset.get("assetType") or "model").lower()
+        slug = _slugify(asset_name)
+        dir_slug = slug[:16] if len(slug) > 16 else slug
+        plural = _pluralize_asset_type(asset_type)
+        self.work_dir = os.path.join(
+            prefs.global_dir_resolved(), plural, f"{dir_slug}_{asset_id}",
+        )
+        os.makedirs(self.work_dir, exist_ok=True)
+
+        res_key  = _resolution_key(prefs.max_resolution)
+        blend_name = f"{slug}_{res_key}_{asset_id}.blend" if res_key else f"{slug}_{asset_id}.blend"
+        self.blend_path = os.path.join(self.work_dir, blend_name)
+        self.out_usd    = os.path.splitext(self.blend_path)[0] + ".usd"
 
         args = {
             "asset_data":     self.asset,
             "max_resolution": prefs.max_resolution,
+            "blend_path":     self.blend_path,
             "out_usd":        self.out_usd,
             "api_key":        auth.get_api_key(),
             "work_dir":       self.work_dir,
@@ -147,9 +278,8 @@ class _DownloadController:
     def _on_progress(self, frac: float, msg: str) -> None:
         log.debug("[BK download] %.0f%% %s", frac * 100, msg)
         self._set_locator_progress(frac)
-        # Show "<step> 42%" inside the gizmo
         step = (msg or "Downloading").strip()
-        self._set_locator_label(status=f"{step}  {int(round(frac * 100))}%")
+        self._set_locator_label(status=f"{step}: {int(round(frac * 100))}%")
 
     def _on_status(self, s: str) -> None:
         log.info("[BK download] %s", s)
@@ -176,15 +306,43 @@ class _DownloadController:
 
     def _on_finished(self, out_path: str) -> None:
         log.info("[BK download] usd ready: %s", out_path)
-        try:
-            self._import_usd(out_path)
-            self._set_locator_state("done")
-            self._delete_locator()
-        except Exception as exc:
-            log.exception("[BK download] import failed: %s", exc)
-            self._set_locator_state("idle")
-        finally:
-            self._cleanup()
+        # Surface the next stage in the gizmo label immediately so the user
+        # sees "Importing…" instead of the gizmo appearing stuck on the
+        # previous "Generating USD" message while mayaUsdImport blocks.
+        self._set_locator_label(status="Importing…")
+        self._set_locator_progress(1.0)
+
+        # Force one viewport redraw NOW so the new label actually appears on
+        # screen before mayaUsdImport blocks the main thread.  Without the
+        # explicit refresh Maya batches the attribute change with the import
+        # work and the user only ever sees the stale "Generating USD" text.
+        if cmds is not None:
+            try:
+                cmds.refresh(force=True)
+            except Exception as exc:
+                log.debug("refresh failed: %s", exc)
+
+        def _do_import() -> None:
+            try:
+                self._import_usd(out_path)
+                self._set_locator_state("done")
+                self._delete_locator()
+            except Exception as exc:
+                log.exception("[BK download] import failed: %s", exc)
+                self._set_locator_state("idle")
+            finally:
+                self._cleanup()
+
+        if cmds is not None:
+            try:
+                # Defer onto the idle loop so the QProcess.finished signal
+                # returns cleanly and Maya gets one more redraw tick before
+                # the blocking USD import takes over.
+                cmds.evalDeferred(_do_import, lowestPriority=True)
+                return
+            except Exception as exc:
+                log.debug("evalDeferred failed (%s); running inline", exc)
+        _do_import()
 
     # ------------------------------------------------------------------
     # Maya integration
@@ -213,19 +371,44 @@ class _DownloadController:
         if not self.locator_name:
             return
         try:
-            from ..plugins import placement_locator as plc
-            plc.set_label(self.locator_name, name=name, status=status)
+            from . import locator_state
+            locator_state.set_label(self.locator_name, name=name, status=status)
         except Exception as exc:  # noqa: BLE001
             log.debug("set_label failed: %s", exc)
 
-    def _delete_locator(self) -> None:
-        # Always clear proxor registry first, even if the node is gone.
+        # Mirror the label to Maya's viewport HUD so the user always sees the
+        # current step, even when the MPxDrawOverride text path is suppressed
+        # (off-screen, font fallback failed, draw override unloaded, etc.).
+        if cmds is None:
+            return
+        entry = locator_state.get_label(self.locator_name)
+        nm   = entry.get("name") or ""
+        st   = entry.get("status") or ""
+        if not (nm or st):
+            return
+        msg = f"<hl>{nm}</hl><br>{st}" if nm and st else (nm or st)
         try:
-            from ..plugins import placement_locator as plc
-            plc.clear_proxor_lines(self.locator_name or "")
-            plc.clear_label(self.locator_name or "")
+            cmds.inViewMessage(
+                amg=msg, pos="topCenter", fade=False, clear="topCenter",
+                fontSize=14,
+            )
+        except Exception as exc:
+            log.debug("inViewMessage failed: %s", exc)
+
+    def _delete_locator(self) -> None:
+        # Always clear shared state first, even if the node is gone.
+        try:
+            from . import locator_state
+            locator_state.clear_proxor_lines(self.locator_name or "")
+            locator_state.clear_label(self.locator_name or "")
         except Exception:  # noqa: BLE001
             pass
+        # Clear any HUD message we put up for this download.
+        if cmds is not None:
+            try:
+                cmds.inViewMessage(clear="topCenter")
+            except Exception:
+                pass
         if not (cmds and self.locator_name and cmds.objExists(self.locator_name)):
             return
         try:
@@ -301,8 +484,9 @@ class _DownloadController:
         )
         grp = cmds.group(new_roots, name=grp_name)
         x, y, z = self.location
+        rx, ry, rz = _euler_from_normal_and_yaw(self.surface_normal, self.rotation_y)
         cmds.xform(grp, worldSpace=True, translation=(x, y, z))
-        cmds.xform(grp, relative=True, rotation=(0.0, self.rotation_y, 0.0))
+        cmds.xform(grp, worldSpace=True, rotation=(rx, ry, rz))
 
     @staticmethod
     def _ensure_usd_plugin() -> None:
@@ -344,6 +528,7 @@ def download_asset(
     location: Sequence[float] = (0.0, 0.0, 0.0),
     rotation_y: float = 0.0,
     locator_name: str = "",
+    surface_normal: Sequence[float] = (0.0, 1.0, 0.0),
 ) -> None:
     """Kick off an asynchronous download for *asset*.
 
@@ -354,7 +539,8 @@ def download_asset(
         log.warning("download_asset called outside Maya — ignored.")
         return
 
-    ctrl = _DownloadController(asset, location, rotation_y, locator_name)
+    ctrl = _DownloadController(asset, location, rotation_y, locator_name,
+                               surface_normal=surface_normal)
     _active_jobs.append(ctrl)
     if not ctrl.start():
         # start() already logged + reset locator

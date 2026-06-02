@@ -311,9 +311,12 @@ def do_build(
         ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
     )
     shutil.copytree(
-        "bl_proxor",
-        f"{addon_build_dir}/bl_proxor",
-        ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
+        "bk_proxor",
+        f"{addon_build_dir}/bk_proxor",
+        ignore=shutil.ignore_patterns(
+            "__pycache__", ".DS_Store", ".git", ".vscode",
+            "pyproject.toml", "README.md",
+        ),
     )
     shutil.copytree(
         "blendfiles",

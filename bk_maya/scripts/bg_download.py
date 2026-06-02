@@ -1,4 +1,4 @@
-"""BlenderKit Maya — background Blender script.
+﻿"""BlenderKit Maya â€” background Blender script.
 
 Executed inside ``blender --background --python <this> -- <args.json>``.
 
@@ -12,7 +12,7 @@ protocol consumed by :mod:`bk_maya.core.blender_runner`::
     BK_DONE     <output-path>
     BK_ERROR    <message>
 
-The script is intentionally self-contained — it does **not** import or depend
+The script is intentionally self-contained â€” it does **not** import or depend
 on the BlenderKit Blender addon.  It only relies on ``bpy`` and Python stdlib.
 """
 
@@ -139,7 +139,7 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
 
     if not api_key:
         raise RuntimeError(
-            "Authentication required for signed download URL — please log in "
+            "Authentication required for signed download URL â€” please log in "
             "to BlenderKit in Maya first."
         )
 
@@ -167,7 +167,7 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
         except Exception:
             pass
         raise RuntimeError(
-            f"signed URL request returned HTTP {exc.code} {exc.reason} — body: {body}"
+            f"signed URL request returned HTTP {exc.code} {exc.reason} â€” body: {body}"
         ) from exc
 
     try:
@@ -180,7 +180,7 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
     signed = body.get("filePath") or ""
     if not signed:
         raise RuntimeError(f"Server did not return filePath: {body}")
-    log_line(f"resolve_signed_url: signed={signed[:120]}…")
+    log_line(f"resolve_signed_url: signed={signed[:120]}â€¦")
     return signed
 
 
@@ -194,17 +194,17 @@ def download_file(url: str, dest_path: str, *, api_key: str = "") -> None:
     """
     headers = {
         "User-Agent": "BlenderKit-Maya/0.1",
-        # Mirror the Go client — allow compressed transfer (#1486).
+        # Mirror the Go client â€” allow compressed transfer (#1486).
         "Cookie": "allow_compression=true",
     }
     if api_key and _is_bk_api_url(url):
         # Only attach Bearer for blenderkit.com API hosts (not CDN/S3).
         headers["Authorization"] = f"Bearer {api_key}"
 
-    log_line(f"download_file: GET {url[:160]}…")
+    log_line(f"download_file: GET {url[:160]}â€¦")
     req = urllib.request.Request(url, headers=headers)
 
-    status("downloading")
+    status("Downloading")
     try:
         resp_cm = urllib.request.urlopen(req, timeout=60)
     except urllib.error.HTTPError as exc:
@@ -229,78 +229,87 @@ def download_file(url: str, dest_path: str, *, api_key: str = "") -> None:
                 fh.write(chunk)
                 written += len(chunk)
                 if total:
-                    progress(written / total * 0.70, f"downloaded {written}/{total}")
-    progress(0.70, "downloaded")
+                    progress(written / total * 0.70, "Downloading")
+    progress(0.70, "Downloaded")
 
 
 # ---------------------------------------------------------------------------
-# Blend → USD export
+# Delegate Blend → USD export to client/tools/export_usd.py
 # ---------------------------------------------------------------------------
 
-def export_to_usd(blend_path: str, out_usd: str) -> None:
-    """Open *blend_path* and export the scene to *out_usd*.
+def _find_export_usd_script(args: dict) -> str:
+    """Locate ``export_usd.py`` shipped under ``client/tools/``.
 
-    Uses Blender's built-in ``wm.usd_export`` operator (no addon required
-    since Blender 3.0; production-grade in 5.x).  Materials are emitted as
-    UsdPreviewSurface networks; textures are copied next to the .usd file
-    in a ``textures/`` subfolder so the resulting USD is self-contained.
-
-    The resulting file is consumed by Maya 2027's ``mayaUsdPlugin`` which
-    is shipped by default — no third-party plugin install required.
+    Lookup order:
+      1. ``args["export_usd_script"]`` (explicit override from Maya side).
+      2. ``$BLENDERKIT_TOOLS_DIR/export_usd.py``.
+      3. Walk up from this script: ``<repo>/client/tools/export_usd.py``.
     """
-    status("opening")
-    bpy.ops.wm.open_mainfile(filepath=blend_path)
-    progress(0.80, "opened blend")
+    candidates: list[str] = []
+    override = args.get("export_usd_script") or ""
+    if override:
+        candidates.append(override)
 
-    # Make sure everything is visible — export the whole scene.
-    for obj in bpy.context.scene.objects:
-        try:
-            obj.hide_set(False)
-        except Exception:
-            pass
-        obj.hide_render = False
-        obj.hide_viewport = False
+    env_dir = os.environ.get("BLENDERKIT_TOOLS_DIR", "")
+    if env_dir:
+        candidates.append(os.path.join(env_dir, "export_usd.py"))
 
-    status("exporting")
-    out_dir = os.path.dirname(out_usd) or "."
-    os.makedirs(out_dir, exist_ok=True)
+    here = os.path.dirname(os.path.abspath(__file__))
+    cur = here
+    for _ in range(6):
+        cur = os.path.dirname(cur)
+        if not cur:
+            break
+        candidates.append(os.path.join(cur, "client", "tools", "export_usd.py"))
 
-    # The signature of ``wm.usd_export`` has changed across Blender versions
-    # (e.g. ``export_textures`` was renamed/dropped, ``root_prim_path`` was
-    # ``default_prim_path`` in 3.x).  Introspect the operator's rna_type
-    # and pass only the kwargs the installed Blender actually understands.
-    desired = dict(
-        filepath=out_usd,
-        selected_objects_only=False,
-        visible_objects_only=True,
-        export_animation=False,
-        export_hair=False,
-        export_uvmaps=True,
-        export_normals=True,
-        export_materials=True,
-        export_textures=True,           # 4.1+: copy referenced images
-        overwrite_textures=True,
-        relative_paths=True,
-        generate_preview_surface=True,  # write UsdPreviewSurface networks
-        root_prim_path="/root",
-        default_prim_path="/root",      # legacy name in Blender 3.x
-        export_global_forward_selection="Y",
-        export_global_up_selection="Z",
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    raise RuntimeError(
+        f"export_usd.py not found. Tried: {candidates}. "
+        "Set BLENDERKIT_TOOLS_DIR or pass export_usd_script in args."
     )
+
+
+def run_export_usd(args: dict, blend_path: str, out_usd: str) -> None:
+    """Exec ``client/tools/export_usd.py`` in this Blender process.
+
+    Reuses the same interpreter (no extra subprocess) by setting up the
+    recipe's expected argv and ``exec``ing it as ``__main__``. Its stdout
+    BK_* protocol lines flow straight back to the Maya-side runner because
+    we share ``sys.stdout``.
+    """
+    script_path = _find_export_usd_script(args)
+    log_line(f"delegating USD export to: {script_path}")
+
+    # Build params JSON next to the .blend so the recipe can pick it up.
+    params = {
+        "blend_path":     blend_path,
+        "out_usd":        out_usd,
+        "max_resolution": args.get("max_resolution", ""),
+    }
+    params_path = os.path.join(os.path.dirname(blend_path) or ".", "_export_usd_params.json")
+    with open(params_path, "w", encoding="utf-8") as fh:
+        json.dump(params, fh)
+
+    saved_argv = sys.argv
     try:
-        rna_props = set(bpy.ops.wm.usd_export.get_rna_type().properties.keys())
-    except Exception as exc:  # noqa: BLE001
-        log_line(f"usd_export: rna introspection failed ({exc}); using all kwargs")
-        rna_props = set(desired.keys())
-
-    accepted = {k: v for k, v in desired.items() if k in rna_props}
-    log_line(f"usd_export: accepted kwargs = {sorted(accepted.keys())}")
-    skipped = sorted(set(desired) - set(accepted))
-    if skipped:
-        log_line(f"usd_export: skipped unknown kwargs = {skipped}")
-
-    bpy.ops.wm.usd_export(**accepted)
-    progress(0.98, "exported usd")
+        # Recipe ABI: <script> -- <params.json>
+        sys.argv = [script_path, "--", params_path]
+        ns: dict = {"__name__": "__main__", "__file__": script_path}
+        with open(script_path, encoding="utf-8") as fh:
+            code = compile(fh.read(), script_path, "exec")
+        try:
+            exec(code, ns)
+        except SystemExit as ex:
+            if ex.code not in (None, 0):
+                raise RuntimeError(f"export_usd.py exited with code {ex.code}")
+    finally:
+        sys.argv = saved_argv
+        try:
+            os.remove(params_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -331,43 +340,57 @@ def main() -> int:
     out_usd        = args.get("out_usd") or args.get("out_glb", "")
     api_key        = args.get("api_key", "")
     work_dir       = args.get("work_dir") or os.path.dirname(out_usd) or "."
+    # Maya-side computes the exact cache path so re-drops hit the existing
+    # .blend instead of triggering a re-download.
+    blend_path     = args.get("blend_path") or ""
 
     progress(0.0, "starting")
 
-    try:
-        url, ft = pick_download_url(asset_data, max_resolution)
-        status(f"picked {ft}")
-        log_line(f"picked file type={ft} url={url}")
-    except Exception as exc:
-        error(str(exc))
-        return 1
+    if blend_path and os.path.isfile(blend_path) and os.path.getsize(blend_path) > 0:
+        status("Using cached .blend")
+        log_line(f"reusing cached blend: {blend_path}")
+        progress(0.70, "Using cached .blend")
+    else:
+        try:
+            url, ft = pick_download_url(asset_data, max_resolution)
+            status(f"picked {ft}")
+            log_line(f"picked file type={ft} url={url}")
+        except Exception as exc:
+            error(str(exc))
+            return 1
 
-    # The URL from search results points at /api/v1/download/<id>/ — we need
-    # to exchange it for a signed CDN URL before fetching the bytes.
-    scene_uuid = asset_data.get("sceneUuid") or asset_data.get("scene_uuid") or str(uuid.uuid4())
-    try:
-        signed_url = resolve_signed_url(url, api_key=api_key, scene_uuid=scene_uuid)
-    except urllib.error.HTTPError as exc:
-        error(f"HTTP {exc.code} while requesting signed URL: {exc.reason}")
-        return 1
-    except Exception as exc:
-        error(f"signed URL request failed: {exc}")
-        traceback.print_exc(file=sys.stdout)
-        return 1
+        # The URL from search results points at /api/v1/download/<id>/ â€” we need
+        # to exchange it for a signed CDN URL before fetching the bytes.
+        scene_uuid = asset_data.get("sceneUuid") or asset_data.get("scene_uuid") or str(uuid.uuid4())
+        try:
+            signed_url = resolve_signed_url(url, api_key=api_key, scene_uuid=scene_uuid)
+        except urllib.error.HTTPError as exc:
+            error(f"HTTP {exc.code} while requesting signed URL: {exc.reason}")
+            return 1
+        except Exception as exc:
+            error(f"signed URL request failed: {exc}")
+            traceback.print_exc(file=sys.stdout)
+            return 1
 
-    blend_path = os.path.join(work_dir, f"_bk_dl_{asset_data.get('id', 'asset')}.blend")
-    try:
-        download_file(signed_url, blend_path, api_key=api_key)
-    except urllib.error.HTTPError as exc:
-        error(f"HTTP {exc.code} while downloading: {exc.reason}")
-        return 1
-    except Exception as exc:
-        error(f"download failed: {exc}")
-        traceback.print_exc(file=sys.stdout)
-        return 1
+        if not blend_path:
+            blend_path = os.path.join(work_dir, f"_bk_dl_{asset_data.get('id', 'asset')}.blend")
+        try:
+            download_file(signed_url, blend_path, api_key=api_key)
+        except urllib.error.HTTPError as exc:
+            error(f"HTTP {exc.code} while downloading: {exc.reason}")
+            return 1
+        except Exception as exc:
+            error(f"download failed: {exc}")
+            traceback.print_exc(file=sys.stdout)
+            return 1
 
     try:
-        export_to_usd(blend_path, out_usd)
+        if os.path.isfile(out_usd) and os.path.getsize(out_usd) > 0:
+            status("Using cached USD")
+            log_line(f"reusing cached usd: {out_usd}")
+            progress(0.99, "Using cached USD")
+        else:
+            run_export_usd(args, blend_path, out_usd)
     except Exception as exc:
         error(f"export failed: {exc}")
         traceback.print_exc(file=sys.stdout)

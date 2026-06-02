@@ -18,6 +18,8 @@ and deleted on completion / cancellation.  It carries no data of its own –
 from __future__ import annotations
 
 import logging
+import os
+import sys
 
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaRender as omr2
@@ -27,58 +29,61 @@ log = logging.getLogger("bk_maya.placement_locator")
 
 
 # ---------------------------------------------------------------------------
-# Proxor registry
+# Shared mutable state
 # ---------------------------------------------------------------------------
-# Proxor data is a list of polylines — too large/structured to store as a
-# Maya node attribute.  We stash it in a module-level dict keyed by the
-# locator's node name; the draw override looks it up each frame.  The
-# placement layer pushes to it when the locator is created and the
-# download controller clears it on completion / failure.
+# Maya's ``cmds.loadPlugin`` loads this file as a *plug-in*, which gives it a
+# module identity separate from anything the addon imports through the usual
+# Python import system.  To avoid two unrelated dicts (one written by the
+# addon, one read by the draw override) we route all per-locator scratch state
+# through ``bk_maya.core.locator_state`` instead of holding it in this file's
+# own globals.
+#
+# We bootstrap sys.path so this works even when Maya loaded the plug-in by
+# absolute path (which leaves ``bk_maya`` unreachable in the plug-in's
+# private module namespace).  Maya's ``loadPlugin`` does NOT inject
+# ``__file__`` into the plug-in's globals, so we have to find this file's
+# location another way.
+def _resolve_plugin_dir() -> str:
+    f = globals().get("__file__")
+    if f:
+        return os.path.dirname(os.path.abspath(f))
+    # Fallback: search sys.path for a matching module file.
+    for d in sys.path:
+        cand = os.path.join(d, "bk_maya", "plugins", "placement_locator.py")
+        if os.path.isfile(cand):
+            return os.path.dirname(cand)
+    return ""
 
-_proxor_registry: dict[str, list] = {}
+_here = _resolve_plugin_dir()                                # …/bk_maya/plugins
+_bk_root = os.path.dirname(os.path.dirname(_here)) if _here else ""  # repo root
+if _bk_root and _bk_root not in sys.path:
+    sys.path.insert(0, _bk_root)
+
+from bk_maya.core import locator_state as _state  # noqa: E402
 
 
 def set_proxor_lines(node_name: str, lines: list) -> None:
     """Register proxor polylines for *node_name* (use ``[]`` to clear)."""
     if lines:
-        _proxor_registry[node_name] = lines
+        _state.set_proxor_lines(node_name, lines)
     else:
-        _proxor_registry.pop(node_name, None)
+        _state.clear_proxor_lines(node_name)
 
 
 def clear_proxor_lines(node_name: str) -> None:
     """Remove any proxor data registered for *node_name*."""
-    _proxor_registry.pop(node_name, None)
-
-
-# ---------------------------------------------------------------------------
-# Label registry (asset name + current step)
-# ---------------------------------------------------------------------------
-# Same idea as the proxor registry — short strings shown as 3D text on top
-# of the bbox helper while a download is running.
-
-_label_registry: dict[str, dict] = {}
+    _state.clear_proxor_lines(node_name)
 
 
 def set_label(node_name: str, name: str | None = None,
               status: str | None = None) -> None:
-    """Update the on-screen labels for *node_name*.
-
-    Pass only the keyword(s) you want to change; ``None`` leaves a field
-    untouched.  Pass empty string to clear a field.
-    """
-    if not node_name:
-        return
-    entry = _label_registry.setdefault(node_name, {"name": "", "status": ""})
-    if name is not None:
-        entry["name"] = str(name)
-    if status is not None:
-        entry["status"] = str(status)
+    """Update the on-screen labels for *node_name*."""
+    _state.set_label(node_name, name=name, status=status)
 
 
 def clear_label(node_name: str) -> None:
     """Remove any label data registered for *node_name*."""
-    _label_registry.pop(node_name, None)
+    _state.clear_label(node_name)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +126,50 @@ def _rotate_y(pt: tuple, deg: float) -> tuple:
     return (x * c - z * s, y, x * s + z * c)
 
 
-def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple) -> list[tuple]:
+def _align_y_to_normal(pt: tuple, normal: tuple) -> tuple:
+    """Rodrigues rotation that maps local (0,1,0) onto *normal*.
+
+    Lets the asset sit "stuck" on the surface like a sticker. Composes
+    AFTER an in-plane ``_rotate_y`` spin so the wheel rotation behaves
+    intuitively as spin around the surface normal.
+    """
+    nx, ny, nz = normal
+    # Axis = cross((0,1,0), n) = (nz, 0, -nx).
+    ax, az = nz, -nx
+    sin2 = ax * ax + az * az
+    if sin2 < 1e-12:
+        # Already aligned (n ~= +Y) or fully flipped (n ~= -Y).
+        if ny >= 0.0:
+            return pt
+        x, y, z = pt
+        return (x, -y, -z)
+    sin_t = math.sqrt(sin2)
+    cos_t = ny
+    ax /= sin_t
+    az /= sin_t
+    x, y, z = pt
+    # Rodrigues with k=(ax,0,az):
+    #   p' = p*cos + (k×p)*sin + k*(k·p)*(1-cos)
+    one_minus_c = 1.0 - cos_t
+    cx = -az * y                       # (k × p).x
+    cy = az * x - ax * z               # (k × p).y
+    cz = ax * y                        # (k × p).z
+    kdp = ax * x + az * z              # k · p
+    rx = x * cos_t + cx * sin_t + ax * kdp * one_minus_c
+    ry = y * cos_t + cy * sin_t                                # k.y = 0
+    rz = z * cos_t + cz * sin_t + az * kdp * one_minus_c
+    return (rx, ry, rz)
+
+
+def _local_to_world(pt: tuple, loc: tuple, rot_y: float, normal: tuple) -> tuple:
+    """Local-space -> world: spin around local Y, align Y to *normal*, translate."""
+    spun = _rotate_y(pt, rot_y)
+    oriented = _align_y_to_normal(spun, normal)
+    return (loc[0] + oriented[0], loc[1] + oriented[1], loc[2] + oriented[2])
+
+
+def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple,
+                  normal: tuple = (0.0, 1.0, 0.0)) -> list[tuple]:
     # Local-space corners of the bbox plus an arrow tip vertex (index 8)
     # that projects forward on -Z from the bottom-front edge centre — small
     # "lip" matching the Blender add-on's draw_bbox() implementation.
@@ -141,12 +189,7 @@ def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple) -> list[tuple]
         (mx[0]-ox, mx[1]-oy, mx[2]-oz), (mn[0]-ox, mx[1]-oy, mx[2]-oz),
         (arrow_x,  arrow_y,  arrow_z),
     ]
-    cx, cy, cz = loc
-    out = []
-    for lx, ly, lz in local:
-        rx, ry, rz = _rotate_y((lx, ly, lz), rot_y)
-        out.append((cx + rx, cy + ry, cz + rz))
-    return out
+    return [_local_to_world(p, loc, rot_y, normal) for p in local]
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +202,7 @@ class BkPlacementLocator(omui2.MPxLocatorNode):
     rotation_y_attr = None
     has_hit_attr = None
     hit_floor_attr = None
+    surface_normal_attr = None
     download_state_attr = None
     bbox_min_attr = None
     bbox_max_attr = None
@@ -195,6 +239,15 @@ class BkPlacementLocator(omui2.MPxLocatorNode):
         nAttr.keyable = True
         nAttr.writable = True
         BkPlacementLocator.addAttribute(BkPlacementLocator.hit_floor_attr)
+
+        # World-space surface normal at the raycast hit; (0,1,0) means
+        # "use floor / Y-up orientation". Authored each cursor poll.
+        BkPlacementLocator.surface_normal_attr = nAttr.createPoint("surfaceNormal", "srfNrm")
+        nAttr.storable = True
+        nAttr.keyable = True
+        nAttr.writable = True
+        nAttr.default = (0.0, 1.0, 0.0)
+        BkPlacementLocator.addAttribute(BkPlacementLocator.surface_normal_attr)
 
         # Download state: 0=idle, 1=downloading, 2=done
         BkPlacementLocator.download_state_attr = eAttr.create("downloadState", "dlState", 0)
@@ -313,6 +366,12 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         has_hit = plug_has_hit.asBool()
         plug_hit_floor = om2.MPlug(node, BkPlacementLocator.hit_floor_attr)
         hit_floor = plug_hit_floor.asBool()
+        try:
+            surface_normal = _read_point3(BkPlacementLocator.surface_normal_attr)
+        except Exception:
+            surface_normal = (0.0, 1.0, 0.0)
+        if surface_normal == (0.0, 0.0, 0.0):
+            surface_normal = (0.0, 1.0, 0.0)
         plug_dl = om2.MPlug(node, BkPlacementLocator.download_state_attr)
         dl_state = plug_dl.asShort()
         plug_prog = om2.MPlug(node, BkPlacementLocator.download_progress_attr)
@@ -325,8 +384,8 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             node_name = om2.MFnDependencyNode(node).name()
         except Exception:
             node_name = ""
-        proxor_lines = _proxor_registry.get(node_name) or []
-        label_entry  = _label_registry.get(node_name) or {}
+        proxor_lines = _state.get_proxor_lines(node_name)
+        label_entry  = _state.get_label(node_name)
 
         # Compose snap dict for drawing
         data.snap = {
@@ -338,19 +397,18 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             "download_progress": dl_prog,
             "bbox_min": bb_min,
             "bbox_max": bb_max,
+            "surface_normal": surface_normal,
             "proxor_lines": proxor_lines,
             "label_name":   label_entry.get("name", ""),
             "label_status": label_entry.get("status", ""),
             "active": True,
         }
-        log.warning("[DRAW] prepareForDraw ATTR snap=%s", data.snap)
         return data
 
     # ── Drawing ─────────────────────────────────────────────────────────
 
     def addUIDrawables(self, objPath, drawManager, frameContext, data) -> None:
         snap = getattr(data, "snap", None)
-        log.warning("[DRAW] addUIDrawables snap=%s", snap)
         if not snap or not snap.get("active"):
             return
 
@@ -359,8 +417,6 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         dl_state = int(snap.get("download_state") or 0)
         dl_prog  = float(snap.get("download_progress") or 0.0)
         downloading = dl_state == 1
-        log.warning("[DRAW] has_hit=%s on_floor=%s dl_state=%s prog=%.2f",
-                    has_hit, on_floor, dl_state, dl_prog)
 
         if downloading:
             col = om2.MColor((0.16, 0.42, 0.84, 1.0))    # BlenderKit blue — downloading
@@ -373,7 +429,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
 
         loc      = tuple(snap.get("location", (0.0, 0.0, 0.0)))
         rot_y    = float(snap.get("rotation_y", 0.0))
-        log.warning("[DRAW] loc=%s rot_y=%s", loc, rot_y)
+        nrm      = tuple(snap.get("surface_normal", (0.0, 1.0, 0.0)))
         # Defaults are in Maya internal units (cm).  A 1 m³ cube is the
         # fall-back so an asset with no bbox metadata is still clearly visible.
         bbox_min = tuple(snap.get("bbox_min", (-50.0,   0.0, -50.0)))
@@ -401,7 +457,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         if not proxor:
             drawManager.setColor(col)
             drawManager.setLineWidth(3.0)
-            corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max)]
+            corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max, nrm)]
             for ai, bi in _BBOX_EDGES:
                 drawManager.line(corners[ai], corners[bi])
             for ai, bi in _ARROW_EDGES:
@@ -411,7 +467,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             if downloading and dl_prog > 0.0:
                 fill_max = (bbox_max[0], fill_top, bbox_max[2])
                 fill_corners = [om2.MPoint(*c) for c in
-                                _bbox_corners(loc, rot_y, bbox_min, fill_max)]
+                                _bbox_corners(loc, rot_y, bbox_min, fill_max, nrm)]
                 fill_col = om2.MColor((0.30, 0.65, 1.00, 1.0))
                 drawManager.setColor(fill_col)
                 drawManager.setLineWidth(2.0)
@@ -431,11 +487,11 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                 drawManager.setColor(color)
                 drawManager.setLineWidth(width)
                 for (p0, p1) in seg_pts:
-                    ax, ay, az = _rotate_y(p0, rot_y)
-                    bx, by, bz = _rotate_y(p1, rot_y)
+                    ax, ay, az = _local_to_world(p0, loc, rot_y, nrm)
+                    bx, by, bz = _local_to_world(p1, loc, rot_y, nrm)
                     drawManager.line(
-                        om2.MPoint(cx + ax, cy + ay, cz + az),
-                        om2.MPoint(cx + bx, cy + by, cz + bz),
+                        om2.MPoint(ax, ay, az),
+                        om2.MPoint(bx, by, bz),
                     )
 
             below_segs: list[tuple] = []
@@ -479,6 +535,13 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         # ── Asset name + current step (3D text floating above the bbox) ─
         label_name   = snap.get("label_name")   or ""
         label_status = snap.get("label_status") or ""
+        # MUIDrawManager.text() corrupts strings with any non-ASCII
+        # codepoint (e.g. U+2026 "…") — it ends up rendering the whole
+        # glyph atlas. Force pure ASCII.
+        def _ascii(s: str) -> str:
+            return s.encode("ascii", "replace").decode("ascii").replace("?", ".")
+        label_name   = _ascii(label_name)
+        label_status = _ascii(label_status)
         if label_name or label_status:
             # Anchor a little above the bbox top so text doesn't z-fight
             # with the wireframe.
