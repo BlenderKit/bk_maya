@@ -26,8 +26,7 @@ proxor_mesh_registry: dict[str, list] = {}
 label_registry: dict[str, dict[str, str]] = {}
 
 
-def set_label(node_name: str, *, name: str | None = None,
-              status: str | None = None) -> None:
+def set_label(node_name: str, *, name: str | None = None, status: str | None = None) -> None:
     if not node_name:
         return
     entry = label_registry.setdefault(node_name, {"name": "", "status": ""})

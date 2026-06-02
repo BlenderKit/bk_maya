@@ -27,6 +27,7 @@ bk_logger = logging.getLogger(__name__)
 
 # ── Formatters ────────────────────────────────────────────────────────────────
 
+
 class BlenderKitFormatter(logging.Formatter):
     """Prefix log records with an emoji for the log level and mask API keys.
 
@@ -35,10 +36,10 @@ class BlenderKitFormatter(logging.Formatter):
     """
 
     EMOJIS = {  # noqa: RUF012
-        logging.DEBUG:    "🐞 ",
-        logging.INFO:     "ℹ️  ",
-        logging.WARNING:  "⚠️  ",
-        logging.ERROR:    "❌ ",
+        logging.DEBUG: "🐞 ",
+        logging.INFO: "ℹ️  ",
+        logging.WARNING: "⚠️  ",
+        logging.ERROR: "❌ ",
         logging.CRITICAL: "🔥 ",
     }
 
@@ -62,21 +63,20 @@ class SensitiveFormatter(logging.Formatter):
 
 def _bk_formatter() -> BlenderKitFormatter:
     return BlenderKitFormatter(
-        fmt="%(levelname)sblenderkit_maya: %(message)s "
-            "[%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
+        fmt="%(levelname)sblenderkit_maya: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
         datefmt="%H:%M:%S",
     )
 
 
 def _sensitive_formatter() -> SensitiveFormatter:
     return SensitiveFormatter(
-        fmt="blenderkit_maya %(levelname)s: %(message)s "
-            "[%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
+        fmt="blenderkit_maya %(levelname)s: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
         datefmt="%H:%M:%S",
     )
 
 
 # ── Configuration helpers ─────────────────────────────────────────────────────
+
 
 def configure_bk_logger() -> None:
     """Configure the root ``bk_maya`` logger.

@@ -139,4 +139,8 @@ arg-type-hints-in-docstring = false
 check-return-types = false
 ignore-private-args = true
 ignore-underscore-args = true
-exclude = "\\.venv"
+# Skip vendored libs (bk_maya/lib/**), the bk_proxor git submodule (scanned in
+# its own repo), legacy build output (out/), the Blender-side recipe scripts
+# (client/tools/**), and CI helpers (.github/**). These are either third-party
+# code we don't own or scripts where strict docstrings add no value.
+exclude = '\.venv|bk_maya[\\/]lib|bk_maya[\\/]bk_proxor|^out|^\.github|client[\\/]tools'

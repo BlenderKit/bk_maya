@@ -1,4 +1,4 @@
-﻿"""BlenderKit Maya â€” background Blender script.
+"""BlenderKit Maya â€” background Blender script.
 
 Executed inside ``blender --background --python <this> -- <args.json>``.
 

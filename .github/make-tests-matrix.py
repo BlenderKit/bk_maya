@@ -137,9 +137,7 @@ def get_daily_builds(jobs: list):
             "download_url": release[0],
             "sha": release[3],
         }
-        if new_job["version"].removesuffix("-stable") not in [
-            job["version"] for job in jobs
-        ]:
+        if new_job["version"].removesuffix("-stable") not in [job["version"] for job in jobs]:
             jobs.append(new_job)
 
 

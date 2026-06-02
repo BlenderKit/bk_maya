@@ -77,9 +77,7 @@ TOKEN_URL = f"{BASE_URL}/o/token/"
 REVOKE_URL = f"{BASE_URL}/o/revoke-token/"
 
 
-def exchange_code_for_tokens(
-    code: str, code_verifier: str, redirect_uri: str
-) -> dict[str, Any]:
+def exchange_code_for_tokens(code: str, code_verifier: str, redirect_uri: str) -> dict[str, Any]:
     """Exchange an OAuth2 authorisation code for access + refresh tokens."""
     return _request(
         "POST",
@@ -127,6 +125,7 @@ def get_profile(api_key: str) -> dict[str, Any]:
 # -------------------------------------------------------------------------
 # Ratings
 # -------------------------------------------------------------------------
+
 
 def rate_asset(
     asset_id: str,
@@ -230,12 +229,12 @@ def build_search_url(
 def search(
     query: str = "",
     asset_type: str = "model",
-    order: str = "",           # empty → auto-determined from query content
+    order: str = "",  # empty → auto-determined from query content
     page_size: int = 24,
     page_offset: int = 0,
     api_key: str = "",
     extra_params: dict[str, Any] | None = None,
-    next_url: str = "",        # if set, use this cursor URL directly (pagination)
+    next_url: str = "",  # if set, use this cursor URL directly (pagination)
 ) -> dict[str, Any]:
     """Search BlenderKit assets.
 
@@ -286,7 +285,7 @@ def search(
     if query:
         q_tokens.append(urllib.parse.quote_plus(query))
     q_tokens.append(f"asset_type:{asset_type}")
-    q_tokens.append("sexualizedContent:")   # empty value → exclude NSFW
+    q_tokens.append("sexualizedContent:")  # empty value → exclude NSFW
     q_tokens.append("verification_status:validated")  # only show approved assets
     q_tokens.append(f"order:{effective_order}")
 
@@ -315,6 +314,7 @@ def search(
 # -------------------------------------------------------------------------
 # Thumbnail download
 # -------------------------------------------------------------------------
+
 
 def download_thumbnail(url: str, dest_path: str, *, timeout: float = 10.0) -> str:
     """Download a thumbnail image to *dest_path*.  Returns *dest_path*."""

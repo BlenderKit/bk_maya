@@ -53,7 +53,14 @@ API_VERSION = ".".join(CLIENT_VERSION.split(".")[:2])  # → "v1.9"
 # Same ordering as the Blender addon; these are also the redirect_uri ports
 # whitelisted by the OAuth app, so we cannot pick arbitrary ones.
 CLIENT_PORTS: tuple[str, ...] = (
-    "62485", "65425", "55428", "49452", "35452", "25152", "5152", "1234",
+    "62485",
+    "65425",
+    "55428",
+    "49452",
+    "35452",
+    "25152",
+    "5152",
+    "1234",
 )
 
 ADDON_VERSION = "3.20.0"
@@ -70,15 +77,15 @@ OAUTH_CLIENT_ID = "IdFRwa3SGA8eMpzhRVFMg5Ts8sPK93xBjif93x0F"
 """OAuth client id baked into the Go client; reused here for URL building."""
 
 POLL_CONNECT_TIMEOUT = 0.20
-POLL_READ_TIMEOUT    = 0.50
-REQUEST_TIMEOUT      = 5.0
+POLL_READ_TIMEOUT = 0.50
+REQUEST_TIMEOUT = 5.0
 
 # ── Module state ─────────────────────────────────────────────────────────────
 
-_state_lock      = threading.Lock()
+_state_lock = threading.Lock()
 _process: subprocess.Popen | None = None
-_active_port:    str  = CLIENT_PORTS[0]
-_app_id:         int  = os.getpid()
+_active_port: str = CLIENT_PORTS[0]
+_app_id: int = os.getpid()
 
 # Consecutive /report failures — used by the report poller to trigger an
 # auto-respawn (mirrors Blender's CLIENT_FAILED_REPORTS counter).
@@ -91,6 +98,7 @@ _use_inplace_client: bool = False
 
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
+
 
 def _addon_root() -> str:
     """Return the directory that contains the ``client/`` binaries folder.
@@ -130,7 +138,10 @@ def _installed_binary_dir() -> str:
     ``<global_dir>/client/bin/vX.Y.Z/``.
     """
     return os.path.join(
-        _prefs_mod.prefs.global_dir_resolved(), "client", "bin", CLIENT_VERSION,
+        _prefs_mod.prefs.global_dir_resolved(),
+        "client",
+        "bin",
+        CLIENT_VERSION,
     )
 
 
@@ -234,10 +245,7 @@ def _ensure_client_binary_installed() -> str:
 
     src = _inplace_binary_path()
     if not os.path.isfile(src):
-        raise FileNotFoundError(
-            f"BlenderKit client binary not found at {src}. "
-            f"Run bk_maya/dev.py to build it."
-        )
+        raise FileNotFoundError(f"BlenderKit client binary not found at {src}. Run bk_maya/dev.py to build it.")
 
     if _use_inplace_client:
         return src
@@ -248,12 +256,14 @@ def _ensure_client_binary_installed() -> str:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
             if sys.platform != "win32":
-                os.chmod(dst, 0o755)  # noqa: S103
+                os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
             log.info("Installed BlenderKit client to %s", dst)
         return dst
     except OSError as exc:
         log.warning(
-            "Could not install client to %s (%s); using in-addon copy.", dst, exc,
+            "Could not install client to %s (%s); using in-addon copy.",
+            dst,
+            exc,
         )
         _use_inplace_client = True
         return src
@@ -276,6 +286,7 @@ def _log_path() -> str:
 
 # ── URL helpers ──────────────────────────────────────────────────────────────
 
+
 def get_base_url(port: str | None = None) -> str:
     return f"http://127.0.0.1:{port or _active_port}/{API_VERSION}"
 
@@ -286,13 +297,14 @@ def get_app_id() -> int:
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
 
+
 def _http_request(
     method: str,
     url: str,
     body: dict | None = None,
     *,
     connect_timeout: float = REQUEST_TIMEOUT,
-    read_timeout:    float = REQUEST_TIMEOUT,
+    read_timeout: float = REQUEST_TIMEOUT,
 ) -> Any:
     """Minimal JSON-in / JSON-out HTTP call. Returns parsed JSON or None."""
     data = None
@@ -311,6 +323,7 @@ def _http_request(
 
 
 # ── Process launch ───────────────────────────────────────────────────────────
+
 
 def _ping(port: str) -> bool:
     """True if a client is responsive on *port*."""
@@ -347,15 +360,24 @@ def _spawn(port: str) -> subprocess.Popen:
     log_file = open(_log_path(), "ab")  # noqa: SIM115
     args = [
         binary,
-        "--port", port,
-        "--server", global_vars.SERVER,
-        "--proxy_which", getattr(p, "proxy_which", "") or "",
-        "--proxy_address", getattr(p, "proxy_address", "") or "",
-        "--trusted_ca_certs", "",
-        "--ssl_context", ssl_context,
-        "--version", f"{ADDON_VERSION}.{ADDON_BUILD}",
-        "--software", SOFTWARE_NAME,
-        "--pid", str(_app_id),
+        "--port",
+        port,
+        "--server",
+        global_vars.SERVER,
+        "--proxy_which",
+        getattr(p, "proxy_which", "") or "",
+        "--proxy_address",
+        getattr(p, "proxy_address", "") or "",
+        "--trusted_ca_certs",
+        "",
+        "--ssl_context",
+        ssl_context,
+        "--version",
+        f"{ADDON_VERSION}.{ADDON_BUILD}",
+        "--software",
+        SOFTWARE_NAME,
+        "--pid",
+        str(_app_id),
     ]
     log.info("Spawning BlenderKit client: %s", " ".join(args))
     proc = subprocess.Popen(
@@ -396,10 +418,7 @@ def ensure_running(timeout: float = 8.0) -> str:
             return port
         time.sleep(0.15)
 
-    raise RuntimeError(
-        f"BlenderKit client did not respond on port {port} within {timeout}s "
-        f"(see log at {_log_path()})"
-    )
+    raise RuntimeError(f"BlenderKit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
 
 
 def shutdown() -> None:
@@ -436,32 +455,33 @@ atexit.register(_atexit_shutdown)
 
 # ── Request payload helpers ──────────────────────────────────────────────────
 
+
 def _minimal_report_data(api_key: str = "") -> dict[str, Any]:
     """Smallest payload accepted by ``/report`` — also used as a ping."""
     return {
-        "app_id":           _app_id,
-        "api_key":          api_key,
-        "addon_version":    ADDON_VERSION,
+        "app_id": _app_id,
+        "api_key": api_key,
+        "addon_version": ADDON_VERSION,
         "platform_version": platform.platform(),
-        "project_name":     "",
+        "project_name": "",
     }
 
 
 def _prefs_block(api_key: str) -> dict[str, Any]:
     return {
-        "api_key":              api_key,
-        "api_key_refresh":      "",
-        "api_key_timeout":      0,
-        "scene_id":             "",
-        "app_id":               _app_id,
-        "unpack_files":         False,
+        "api_key": api_key,
+        "api_key_refresh": "",
+        "api_key_timeout": 0,
+        "scene_id": "",
+        "app_id": _app_id,
+        "unpack_files": False,
         "create_asset_library": False,
-        "resolution":           "ORIGINAL",
-        "project_subdir":       "",
-        "global_dir":           "",
-        "binary_path":          "",
-        "addon_dir":            "",
-        "addon_module_name":    "bk_maya",
+        "resolution": "ORIGINAL",
+        "project_subdir": "",
+        "global_dir": "",
+        "binary_path": "",
+        "addon_dir": "",
+        "addon_module_name": "bk_maya",
     }
 
 
@@ -469,13 +489,14 @@ def _prefs_block(api_key: str) -> dict[str, Any]:
 
 # ── OAuth ip──────────────────────────────────────────────────────────────────────────────────────
 
+
 def send_oauth_verification_data(code_verifier: str, state: str) -> None:
     """Hand the PKCE verifier + state to the client so it can complete the
     redirect-callback exchange when the browser hits ``/consumer/exchange/``.
     """
     body = _minimal_report_data()
     body["code_verifier"] = code_verifier
-    body["state"]         = state
+    body["state"] = state
     _http_request("POST", f"{get_base_url()}/oauth2/verification_data", body=body)
 
 
@@ -497,37 +518,38 @@ def oauth2_logout(refresh_token_str: str, api_key: str = "") -> None:
 
 # ── Search ──────────────────────────────────────────────────────────────────────────────────────────────
 
+
 def asset_search(
     *,
-    urlquery:    str,
-    tempdir:     str,
-    asset_type:  str,
-    api_key:     str = "",
-    page_size:   int = 24,
-    next_url:    str = "",
-    get_next:    bool = False,
-    scene_uuid:  str = "",
+    urlquery: str,
+    tempdir: str,
+    asset_type: str,
+    api_key: str = "",
+    page_size: int = 24,
+    next_url: str = "",
+    get_next: bool = False,
+    scene_uuid: str = "",
 ) -> str:
     """POST a search to the local client. Returns the task_id immediately.
 
     Actual results arrive via ``/report`` as a task of type ``search``.
     """
     body = {
-        "PREFS":            _prefs_block(api_key),
-        "addon_version":    ADDON_VERSION,
+        "PREFS": _prefs_block(api_key),
+        "addon_version": ADDON_VERSION,
         "platform_version": platform.platform(),
-        "api_key":          api_key,
-        "app_id":           _app_id,
-        "asset_type":       asset_type,
-        "blender_version":  "0.0.0",   # client just echoes this back
-        "get_next":         get_next,
-        "next":             next_url,
-        "page_size":        page_size,
-        "scene_uuid":       scene_uuid or str(uuid.uuid4()),
-        "tempdir":          tempdir,
-        "urlquery":         urlquery,
-        "is_validator":     False,
-        "history_id":       "",
+        "api_key": api_key,
+        "app_id": _app_id,
+        "asset_type": asset_type,
+        "blender_version": "0.0.0",  # client just echoes this back
+        "get_next": get_next,
+        "next": next_url,
+        "page_size": page_size,
+        "scene_uuid": scene_uuid or str(uuid.uuid4()),
+        "tempdir": tempdir,
+        "urlquery": urlquery,
+        "is_validator": False,
+        "history_id": "",
     }
     url = f"{get_base_url()}/blender/asset_search"
     resp = _http_request("POST", url, body=body)
@@ -538,13 +560,14 @@ def asset_search(
 
 # ── Proxor (.prxc) on-demand download ────────────────────────────────────────
 
+
 def asset_prxc_download(
     *,
     asset_base_id: str,
-    download_url:  str,
-    file_path:     str,
-    api_key:       str = "",
-    scene_uuid:    str = "",
+    download_url: str,
+    file_path: str,
+    api_key: str = "",
+    scene_uuid: str = "",
 ) -> str:
     """Schedule a ``.prxc`` proxor download. Returns the task_id immediately.
 
@@ -552,15 +575,15 @@ def asset_prxc_download(
     ``data`` carries ``assetBaseId`` + ``file_path``.
     """
     body = {
-        "PREFS":            _prefs_block(api_key),
-        "addon_version":    ADDON_VERSION,
+        "PREFS": _prefs_block(api_key),
+        "addon_version": ADDON_VERSION,
         "platform_version": platform.platform(),
-        "api_key":          api_key,
-        "app_id":           _app_id,
-        "assetBaseId":      asset_base_id,
-        "download_url":     download_url,
-        "file_path":        file_path,
-        "scene_uuid":       scene_uuid or str(uuid.uuid4()),
+        "api_key": api_key,
+        "app_id": _app_id,
+        "assetBaseId": asset_base_id,
+        "download_url": download_url,
+        "file_path": file_path,
+        "scene_uuid": scene_uuid or str(uuid.uuid4()),
     }
     url = f"{get_base_url()}/blender/asset_prxc_download"
     resp = _http_request("POST", url, body=body)
@@ -570,6 +593,7 @@ def asset_prxc_download(
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────
+
 
 def get_reports(api_key: str = "") -> list[dict[str, Any]]:
     """Poll ``/report`` and return the list of task dicts.
@@ -581,7 +605,9 @@ def get_reports(api_key: str = "") -> list[dict[str, Any]]:
     url = f"{get_base_url()}/report"
     try:
         resp = _http_request(
-            "GET", url, body=_minimal_report_data(api_key),
+            "GET",
+            url,
+            body=_minimal_report_data(api_key),
             connect_timeout=POLL_CONNECT_TIMEOUT,
             read_timeout=POLL_READ_TIMEOUT,
         )
@@ -630,8 +656,8 @@ def _try_respawn() -> None:
 # Thumbnail tasks are not keyed by task_id (they're per-asset) and are
 # instead dispatched by ``assetBaseId`` via ``ThumbRegistry``.
 
-SearchCallback = Callable[[dict[str, Any]], None]   # (result dict)
-ErrorCallback  = Callable[[str], None]
+SearchCallback = Callable[[dict[str, Any]], None]  # (result dict)
+ErrorCallback = Callable[[str], None]
 
 
 class _SearchRegistry:
@@ -671,8 +697,8 @@ class _ThumbRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._cbs:    dict[str, Callable[[str], None]] = {}
-        self._cached: dict[str, str]                    = {}
+        self._cbs: dict[str, Callable[[str], None]] = {}
+        self._cached: dict[str, str] = {}
 
     def register(self, asset_base_id: str, cb: Callable[[str], None]) -> None:
         """Register *cb*. If a path was already delivered for this id, fire
@@ -729,8 +755,8 @@ class _PrxcRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._cbs:    dict[str, Callable[[str], None]] = {}
-        self._cached: dict[str, str]                    = {}
+        self._cbs: dict[str, Callable[[str], None]] = {}
+        self._cached: dict[str, str] = {}
 
     def register(self, asset_base_id: str, cb: Callable[[str], None]) -> None:
         if not asset_base_id:
@@ -786,7 +812,7 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
     Safe to call from the GUI thread (which is where the poller runs).
     """
     for task in tasks:
-        ttype  = task.get("task_type", "")
+        ttype = task.get("task_type", "")
         status = task.get("status", "")
 
         if ttype == "search":
@@ -815,7 +841,7 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 continue
             data = task.get("data") or {}
             base_id = data.get("assetBaseId") or ""
-            path    = data.get("image_path")  or ""
+            path = data.get("image_path") or ""
             if not (base_id and path):
                 continue
             cb = thumb_registry.deliver(base_id, path)
@@ -831,7 +857,7 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 continue
             data = task.get("data") or {}
             base_id = data.get("assetBaseId") or ""
-            path    = data.get("file_path")   or ""
+            path = data.get("file_path") or ""
             if not (base_id and path):
                 continue
             cb = prxc_registry.deliver(base_id, path)
@@ -847,7 +873,7 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 cb = _login_cb
             if cb is None:
                 continue
-            result  = task.get("result") or {}
+            result = task.get("result") or {}
             message = task.get("message") or ""
             try:
                 cb(result, status, message)

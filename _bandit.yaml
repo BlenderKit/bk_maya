@@ -4,8 +4,16 @@ include:
 exclude_dirs:
   - ".venv"
   - "__pycache__"
+  - "out"               # build/output tree containing legacy Blender add-on
+  - "_debug"            # ad-hoc local probes, not shipped
+  - "tests"             # asserts + synthetic fixtures
+  - "bk_maya/lib"       # vendored third-party (qtpy, requests, packaging)
+  - "bk_maya/bk_proxor" # git submodule — scanned in its own repo
 
 skips:
+  - "B101" # assert_used — used in tests (excluded above, but harmless globally)
+  - "B102" # exec_used — recipe runner (bg_download) + vendored qtpy uic loader
+  - "B310" # urllib.urlopen — all targets are hard-coded BlenderKit https URLs
   - "B404" # https://bandit.readthedocs.io/en/1.7.10/blacklists/blacklist_imports.html#b404-import-subprocess
   - "B603" # https://bandit.readthedocs.io/en/1.7.10/plugins/b603_subprocess_without_shell_equals_true.html
   - "B608" # https://bandit.readthedocs.io/en/1.7.10/plugins/b608_hardcoded_sql_expressions.html
