@@ -248,108 +248,91 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
 
 
 def do_build(install_at=None, include_tests=False, clean_dir=None, client_binaries_path=None):
-    """Build addon by copying relevant addon directories and files to ./out/blenderkit directory.
-    Create zip in ./out/blenderkit.zip.
-    - install_at: string or list of paths where to install the addon, e.g. ["/path1/addons", "/path2/addons"]
-    - include_tests: include test files into .zip file, so tests can be run with this .zip
-    - clean_dir: if specified, clean that directory before building the add-on, e.g. clean client bin in blenderkit_data: "/Users/username/blenderkit_data/client/bin"
-    - client_binaries_path: if specified, use client (signed) binaries from that path instead of building new ones, e.g. "./client_builds/v1.0.0" containing client binaries for different platforms
+    """Build the Maya add-on into ``./out/blenderkit`` and ``./out/blenderkit.zip``.
+
+    Layout produced (mirrors what the runtime expects, see
+    ``bk_maya/core/client_lib.py:_addon_root``)::
+
+        out/blenderkit/
+            bk_maya/            # python sources (incl. vendored lib/ and bk_proxor/)
+            client/vX.Y.Z/      # platform client binaries
+            blenderkit.mod      # Maya module registration
+
+    - install_at: list of Maya ``modules`` directories where the addon should
+      be copied. The .mod file ships inside the build, so a recursive copy of
+      ``out/blenderkit`` into each location is all that is required.
+    - include_tests: also copy the repo-level ``tests/`` directory into the build.
+    - clean_dir: directory to wipe after building (e.g. cached client binaries
+      under the user's BlenderKit data dir).
+    - client_binaries_path: use pre-signed binaries from this directory instead
+      of rebuilding (``release`` command).
     """
     out_dir = os.path.abspath("out")
     addon_build_dir = os.path.join(out_dir, "blenderkit")
     shutil.rmtree(out_dir, True)
+    os.makedirs(addon_build_dir)
 
-    # Vendor pure-Python Qt abstraction layer before copying sources.
-    # lib/ is generated (gitignored); create/refresh it now so the build
-    # output always contains an up-to-date copy.
-    lib_src = os.path.abspath("lib")
-    vendor_packages(lib_src)
+    # Refresh vendored pure-Python dependencies inside the source tree so the
+    # in-place dev install and the packaged build see the same files.
+    vendor_packages(os.path.abspath(os.path.join("bk_maya", "lib")))
 
     if client_binaries_path is None:
         blenderkit_client_build(addon_build_dir)
     else:
         copy_client_binaries(client_binaries_path, addon_build_dir)
 
-    ignore_files = [
-        ".gitignore",
-        "dev.py",
-        "README.md",
-        "CONTRIBUTING.md",
-        "setup.cfg",
+    # Copy bk_maya/ Python sources (including vendored lib/ and the
+    # bk_proxor submodule contents). Drop dev/test artefacts from inside it.
+    bk_ignore = shutil.ignore_patterns(
+        "__pycache__",
+        "*.pyc",
         ".DS_Store",
-        "pyproject.toml",
-        ".pdm-python",
-        ".env",
-        "pdm.lock",
-        "_bandit.yaml",
-        "codecov.yml",
-        "test.py",
-    ]
+        ".git",
+        ".gitignore",
+        ".vscode",
+        ".ruff_cache",
+        "dev.py",
+    )
+    shutil.copytree(
+        "bk_maya",
+        os.path.join(addon_build_dir, "bk_maya"),
+        ignore=bk_ignore,
+    )
 
-    shutil.copytree(
-        "bl_ui_widgets",
-        f"{addon_build_dir}/bl_ui_widgets",
-        ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
-    )
-    shutil.copytree(
-        "asset_bar",
-        f"{addon_build_dir}/asset_bar",
-        ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
-    )
-    shutil.copytree(
-        "bk_proxor",
-        f"{addon_build_dir}/bk_proxor",
-        ignore=shutil.ignore_patterns(
-            "__pycache__",
-            ".DS_Store",
-            ".git",
-            ".vscode",
-            "pyproject.toml",
-            "README.md",
-        ),
-    )
-    shutil.copytree(
-        "blendfiles",
-        f"{addon_build_dir}/blendfiles",
-        ignore=shutil.ignore_patterns(".DS_Store"),
-    )
-    shutil.copytree("data", f"{addon_build_dir}/data", ignore=shutil.ignore_patterns(".DS_Store"))
-    shutil.copytree(
-        "thumbnails",
-        f"{addon_build_dir}/thumbnails",
-        ignore=shutil.ignore_patterns(".DS_Store"),
-    )
-    shutil.copytree(
-        lib_src,
-        f"{addon_build_dir}/lib",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
-    )
     if include_tests:
         shutil.copytree(
             "tests",
-            f"{addon_build_dir}/tests",
+            os.path.join(addon_build_dir, "tests"),
             ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
         )
 
-    for item in os.listdir():
-        if os.path.isdir(item):
-            continue  # we copied directories above
-        if item in ignore_files:
-            continue
-        if include_tests is False and item.startswith("test_"):
-            continue  # we do not include test files
-        shutil.copy(item, f"{addon_build_dir}/{item}")
+    # Write the Maya module file so dropping the folder into a Maya modules
+    # directory is enough — no manual PYTHONPATH/MAYA_PLUG_IN_PATH editing.
+    mod_path = os.path.join(addon_build_dir, "blenderkit.mod")
+    mod_content = (
+        "+ blenderkit 1.0 blenderkit\n"
+        "MAYA_PLUG_IN_PATH+:= bk_maya/plugins\n"
+        "PYTHONPATH+:= .\n"
+        "PYTHONPATH+:= bk_maya/lib\n"
+    )
+    with open(mod_path, "w", encoding="utf-8") as fh:
+        fh.write(mod_content)
+
+    # Top-level README / LICENSE are useful in the zip but not required.
+    for top_level in ("README.md", "LICENSE"):
+        if os.path.isfile(top_level):
+            shutil.copy(top_level, os.path.join(addon_build_dir, top_level))
 
     # CREATE ZIP
     print("Creating ZIP archive.")
     shutil.make_archive("out/blenderkit", "zip", "out", "blenderkit")
 
-    # Handle multiple install locations
     if install_at is not None:
         for location in install_at:
-            print(f"Copying to {location}/blenderkit")
-            shutil.rmtree(f"{location}/blenderkit", ignore_errors=True)
-            shutil.copytree("out/blenderkit", f"{location}/blenderkit")
+            target = os.path.join(location, "blenderkit")
+            print(f"Copying to {target}")
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(addon_build_dir, target)
 
     if clean_dir is not None:
         print(f"Cleaning directory {clean_dir}")
@@ -358,82 +341,17 @@ def do_build(install_at=None, include_tests=False, clean_dir=None, client_binari
     print("Build done!")
 
 
-def run_tests(args):
-    do_build(
-        args.install_at,
-        include_tests=True,
-        clean_dir=args.clean_dir,
-        client_binaries_path=args.client_build,
-    )
-    # Best effort here to keep it simple and detect automatically, other option would be to add it as a flag
-    if "extensions/user_default" in args.install_at:  # noqa: SIM108
-        extensions_format = True
-    else:
-        extensions_format = False
-    run_go_tests()
-    run_python_tests(extensions_format, fast=args.fast)
-
-
-def run_python_tests(extension_format: bool, fast: bool):
-    print("=== Running add-on integration tests in Blender ===")
-    if extension_format:  # Here we expect default settings  # noqa: SIM108
-        addon_package_name = "bl_ext.user_default.blenderkit"
-    else:  # legacy format
-        addon_package_name = "blenderkit"
-    env = os.environ.copy()
-    if fast:
-        env["TESTS_TYPE"] = "FAST"
-    test = subprocess.Popen(
-        [
-            "blender",
-            "--background",
-            "-noaudio",
-            "--python-exit-code",
-            "1",
-            "--python",
-            "tests/test.py",
-            "--",
-            addon_package_name,
-        ],
-        env=env,
-    )
-    test.wait()
-    if test.returncode == 1:
-        exit(1)
-    print("=== Blender integration tests passed ===")
-
-
-def run_go_tests():
-    print("\n=== Running Client Go unit tests ===")
-    gotest = subprocess.Popen(["go", "test"], cwd="client")
-    gotest.wait()
-    if gotest.returncode != 0:
-        exit(1)
-    print("=== Go tests passed.\n")
-
-
-def format_code():
-    """Sort, format and lint the code."""
-    print("***** SORTING IMPORTS on ALL files *****")
-    subprocess.call(["isort", "."])
-
-    print("\n***** FORMATTING CODE on ALL files *****")
-    subprocess.call(["black", "."])
-
-
 ### COMMAND LINE INTERFACE
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "command",
     default="build",
-    choices=["format", "build", "test", "release", "vendor"],
+    choices=["build", "release", "vendor"],
     help="""
-  FORMAT  = isort imports, format code with Black and lint it with Ruff.
-  TEST    = build with test files and run tests.
-  BUILD   = copy relevant files into ./out/blenderkit (vendors lib/ first).
-  RELEASE = build the add-on .zip with already built client binaries.
-  VENDOR  = download pure-Python vendor packages (qtpy, packaging) into lib/.
+  BUILD   = vendor lib/, build client binaries, assemble out/blenderkit and zip it.
+  RELEASE = like BUILD but uses already signed client binaries from --client-build.
+  VENDOR  = (re)download pure-Python vendor packages into bk_maya/lib/.
   """,
 )
 parser.add_argument(
@@ -441,25 +359,19 @@ parser.add_argument(
     type=str,
     action="append",  # This allows multiple --install-at arguments
     default=None,
-    help="Specify path where the add-on should be installed. Flag can be used multiple times.",
+    help="Maya modules directory to copy the built addon into. Can be used multiple times.",
 )
 parser.add_argument(
     "--clean-dir",
     type=str,
     default=None,
-    help="Specify path to global_dir/client/bin or other dir which should be cleaned.",
+    help="Directory to wipe after building (e.g. cached client binaries under the user's BlenderKit data dir).",
 )
 parser.add_argument(
     "--client-build",
     type=str,
     default=None,
-    help="Specify path client_builds/vX.Y.Z. Binaries in this directory will be used instead of building new ones.",
-)
-parser.add_argument(
-    "--fast",
-    type=bool,
-    default=False,
-    help="Run just fast tests. These are Go unittests and Python fast tests (skips those which do requests).",
+    help="Path to client_builds/vX.Y.Z. Binaries in this directory will be used instead of building new ones.",
 )
 args = parser.parse_args()
 
@@ -479,11 +391,7 @@ elif args.command == "release":
         clean_dir=args.clean_dir,
         client_binaries_path=args.client_build,
     )
-elif args.command == "test":
-    run_tests(args)
-elif args.command == "format":
-    format_code()
 elif args.command == "vendor":
-    vendor_packages(os.path.abspath("lib"))
+    vendor_packages(os.path.abspath(os.path.join("bk_maya", "lib")))
 else:
     parser.print_help()
