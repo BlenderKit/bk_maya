@@ -63,14 +63,14 @@ class SensitiveFormatter(logging.Formatter):
 
 def _bk_formatter() -> BlenderKitFormatter:
     return BlenderKitFormatter(
-        fmt="%(levelname)sblenderkit_maya: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
+        fmt="%(levelname)sbk_maya: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
         datefmt="%H:%M:%S",
     )
 
 
 def _sensitive_formatter() -> SensitiveFormatter:
     return SensitiveFormatter(
-        fmt="blenderkit_maya %(levelname)s: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
+        fmt="bk_maya %(levelname)s: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
         datefmt="%H:%M:%S",
     )
 

@@ -130,7 +130,7 @@ fi
 # --- Move to repository root ---
 cd "${REPO_DIR}"
 
-PROJECT_NAME="blenderkit_maya"
+PROJECT_NAME="bk_maya"
 PROJECT_DIR="${REPO_DIR}"
 REQUIREMENTS_FILE="${PROJECT_DIR}/pyproject.toml"
 

@@ -77,10 +77,10 @@ pdm self update
 cd /d %REPO_FOLDER%
 
 echo ----------------------------------------
-echo "Processing project: blenderkit_maya"
+echo "Processing project: bk_maya"
 echo ----------------------------------------
 
-set "PROJECT_NAME=blenderkit_maya"
+set "PROJECT_NAME=bk_maya"
 set "PROJECT_DIR=%REPO_FOLDER%"
 :: make PROJECT_DIR absolute
 for %%A in ("!PROJECT_DIR!") do set "PROJECT_DIR=%%~fA"

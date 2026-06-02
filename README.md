@@ -4,7 +4,7 @@
 
   Asset search, download and drag&drop directly inside Autodesk Maya.
 
-  [![Project license](https://img.shields.io/github/license/blenderkit/blenderkit_maya.svg?color=orange)](LICENSE)
+  [![Project license](https://img.shields.io/github/license/blenderkit/bk_maya.svg?color=orange)](LICENSE)
 </div>
 
 > **Status:** early development. There is **no automated release yet** — installable artefacts must be built locally with `python bk_maya/dev.py build`. A release pipeline will follow soon.
@@ -28,8 +28,8 @@ It is a port of the official Blender add-on built on:
 
 ```powershell
 # 1. clone with submodules
-git clone --recursive https://github.com/BlenderKit/blenderkit_maya.git
-cd blenderkit_maya
+git clone --recursive https://github.com/BlenderKit/bk_maya.git
+cd bk_maya
 
 # 2. create a venv and install dev tooling
 python -m venv .venv
@@ -68,7 +68,7 @@ All checks are also wired up as a [pre-commit](https://pre-commit.com) hook — 
 ## How to contribute
 - Share the word about BlenderKit with your friends and colleagues, or on social media.
 - [Become a Creator](https://www.blenderkit.com/become-creator/) and upload your assets to the BlenderKit Free or Full Plan database.
-- Report a bug or request a feature in the [issue tracker](https://github.com/BlenderKit/blenderkit_maya/issues).
+- Report a bug or request a feature in the [issue tracker](https://github.com/BlenderKit/bk_maya/issues).
 - Contribute code — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
