@@ -56,120 +56,98 @@ except Exception as e:
 
 ### Codestyle
 
-We use `isort` for imports sorting.
-We use `black` for codestyle.
-We try to type statically with `mypy.`.
-We use `go fmt` for formatting Go code in `./client`.
-We will use `ruff` for linting.
+We use `ruff` for lint and formatting of Python code, `pydoclint` for docstring
+consistency and `bandit` for security checks. `go fmt` formats Go code in
+`./client`. The exact versions used by CI are pinned in `pyproject.toml` under
+`[dependency-groups].dev`.
 
-We define versions in `devs/requirements.txt` so the local development environment is consistent with CI/CD (Github Actions).
-To install them in correct versions run: `pip3 install -U --user --r devs/requirements.py`.
-
-Before committing your changes, please run:
+Install the dev tools into your active environment:
 ```
-pdm run mypy .
-pdm run isort .
-pdm run black .
+pip install -e .
+pip install "ruff>=0.15.6" "pydoclint>=0.8.3" "bandit>=1.9.4" pre-commit
+pre-commit install
 ```
 
-or if installed locally:
+Before committing, run the same checks CI runs:
 ```
-mypy .
-isort .
-black .
+ruff check .
+ruff format .
+pydoclint .
+bandit -c _bandit.yaml -ll -r .
+gofmt -l ./client
 ```
 
-or just run `python3 dev.py format` to run all of them automatically.
-
-Right now `isort` and `black` are required.
-Pull requests will fail in CI/CD if they are not formatted properly and isort or black throws an error.
-
-We are migrating towards `ruff` as well, but it is not required yet.
-Please run `ruff` on files you have edited and try to fix all the errors.
-Slowly we will add the ruff as a required check in CI/CD.
+Pull requests will fail in CI if any of these report errors.
 
 ### Building the add-on
 
-Use `dev.py` script to build the add-on.
-This script will copy relevant files to `out/blenderkit` directory (ignoring all files which are not needed in the add-on).
-From this source the script will then create a zip file at `out/blenderkit.zip`.
-This zip then can be used as a release of BlenderKit.
+Use `bk_maya/dev.py` from the repo root to build the add-on. The script copies
+the relevant files into `out/blenderkit` (skipping anything not needed in the
+shipped add-on) and produces `out/blenderkit.zip`.
 
 To build run:
 ```
-python dev.py build
+python bk_maya/dev.py build
 ```
 
 #### Development build: build for quick testing
 
-Script `dev.py` provides handy option `--install-at` to copy the `out/blenderkit` directly to Blender so you can quickly test the build just by starting the Blender without any further steps.
-Just specify path to addons directory in `--install-at` flag.
-Script will then remove old `blenderkit` directory in addons location and replace it with current build.
-
-To build and copy to Blender 4.2.x addons directory and also clean blenderkit_data, run:
-
-```
-python dev.py build --install-at /path/to/blender/4.2/scripts/addons --clean-dir /Users/username/blenderkit_data
-```
-
-To build and copy to Blender 4.2.x as extension, run:
+`bk_maya/dev.py` accepts `--install-at` to copy the built `out/blenderkit`
+directly into a Maya modules / scripts location, so the add-on is ready to load
+on the next Maya start. The flag can be passed multiple times to install into
+several targets at once.
 
 ```
-python dev.py build --install-at /path/to/blender/4.2/extensions/user_default --clean-dir /Users/username/blenderkit_data
+python bk_maya/dev.py build --install-at /path/to/maya/modules
 ```
 
-NOTE: --clean-dir is required if you change anything in the blenderkit-client, otherwise add-on will not copy the new binaries over the old ones.
-We recommend using this command to clean all client binaries, while enabling you to continuously tail -f default.log file:
+`--clean-dir` can be used to wipe a stale client binaries directory (required
+when you change the Go client, otherwise the cached binary is not overwritten):
 
 ```
-python dev.py build --install-at /path/to/blender/4.0/scripts/addons --clean-dir /Users/username/blenderkit_data/client/bin
+python bk_maya/dev.py build --install-at /path/to/maya/modules --clean-dir ~/blenderkit_data/client/bin
 ```
 
 ## Releasing
 
-Before release update the add-on version in `__init__.py` (in bl_info and VERSION variable) and `client/VERSION`, make sure it is merged in `main` branch.
+Before release update the add-on version in `__init__.py` and
+`blender_manifest.toml`, and the client version in `client/VERSION`. Make sure
+the bump is merged into `main`.
 
-1. go to Github Actions, choose `Release` workflow
-2. insert the version in format `X.Y.Z.YYMMDD` (e.g. `3.12.2.240722`), this has to be same as in `__init__.py`.
-3. set Release Stage to `alpha`, `beta`, `rc` or `gold` for final release
-4. once finished, the release draft is available in Github Releases
+There is no automated release workflow yet for the Maya port — builds are
+produced from `python bk_maya/dev.py build` and published manually.
 
 ## Testing
 
-BlenderKit add-on uses tests implemented through `unittest` module.
-As the add-on and its submodules require `bpy` module and interaction with Blender, the tests needs to be executed in the Python inside of the Blender.
-This makes the tests to be on the edge between unit tests and integration tests.
+The Maya port ships pure-Python unit tests under `tests/`. They cover the
+PRX coordinate converters, locator state registries, PRX round-tripping and
+global var handling, and have no dependency on Maya or Qt.
 
-The tests are defined in `tests/test_<name-of-tested-file>.py` files and their starting point is `tests/test.py` which is executed from `dev.py` script.
-
-### Install dependencies
-
-1. install `pdm` package manager (https://pdm-project.org/en/latest/#installation)
-2. install developers dependencies `pdm install`
-3. Verify installation:
+The `bk_proxor` submodule is required by some tests, so first ensure it is
+initialised:
 ```
-pdm run black --version
-pdm run isort --version
-pdm run mypy --version
+git submodule update --init --recursive
 ```
 
-### Local testing
-
-To test the add-on locally, make sure you have a Blender on your PATH.
-Then run to test as legacy add-on:
-
+Then run the suite from the repo root:
 ```
-python dev.py test --install-at /path/to/blender/4.2/scripts/addons
+python -m unittest discover tests
 ```
 
-Or to test as extension:
-
+Or run the same subset CI runs, with coverage:
 ```
-python dev.py test --install-at /path/to/blender/4.2/extensions/user_default
+python -m coverage run --source=bk_maya/bk_proxor/src/bk_proxor,bk_maya/core \
+    -m unittest \
+        tests.test_proxor_maya_draw \
+        tests.test_locator_state \
+        tests.test_prx_format_roundtrip \
+        tests.test_global_vars
 ```
 
-NOTE: please make sure that version in the `--install-at` path must match the version of the Blender version you have on your PATH.
-Otherwise the add-on with test files will be copied to Blender version 4.x, but tests will run on different Blender version 4.a with outdated (or missing) BlenderKit build.
+Go tests for the client live in `./client` and can be run with:
+```
+cd client && go test ./...
+```
 
 ### Pull Requests
 
@@ -181,13 +159,15 @@ PR will be reviewed by the team and if it passes the automated tests and checks,
 
 #### Automated tests
 
-We run automated tests on: Pull Requests.
-The tests and checks which must pass for PR to be accepted are:
-- unit/integration tests on several versions of Blender 3.x.,
-- `isort` check for validity of import sorting,
-- `black` check for codestyle,
-- `go fmt` check for formatting Go code in `./client`,
-- automated build of the add-on.
+We run automated checks on Pull Requests and on pushes to `main`/`master`.
+The checks which must pass for a PR to be accepted are:
+- `ruff check .` — lint,
+- `ruff format --check .` — formatting,
+- `pydoclint .` — docstring consistency,
+- `bandit -c _bandit.yaml -ll -r .` — security (medium+ severity),
+- `gofmt` check for Go code in `./client`,
+- Go unit tests for the client,
+- Maya-port unit tests on Python 3.11 and 3.12,
+- automated build of the add-on via `python bk_maya/dev.py build`.
 
-Those CI/CD jobs are realized through Github workflows and are defined in `.github/workflows` directory.
-For Pull Requests jobs it is in file: `.github/workflows/PR.yml`.
+Those CI jobs are defined in a single workflow: `.github/workflows/CI.yml`.

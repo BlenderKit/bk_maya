@@ -1,33 +1,46 @@
-name: PR
+name: CI
 
 on:
   pull_request:
-    branches: [ '**' ]
+    branches: ['**']
+  push:
+    branches: [main, master]
   workflow_dispatch:
 
+# Cancel superseded runs on the same ref so pushing twice doesn't spin up
+# duplicate pipelines.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  Checks:
+  Lint:
+    # Ruff (lint + format), pydoclint and bandit — all Python-only, fast,
+    # share the same interpreter setup.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-        id: go
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
       - name: Install lint tools
-        run: python -m pip install "ruff>=0.15.6"
-      - name: Go format check
-        run: test -z $(gofmt -l ./client)
+        run: |
+          python -m pip install \
+            "ruff>=0.15.6" \
+            "pydoclint>=0.8.3" \
+            "bandit>=1.9.4"
       - name: Ruff check
         run: ruff check .
       - name: Ruff format check
         run: ruff format --check .
+      - name: Pydoclint check
+        run: pydoclint .
+      - name: Bandit (medium+)
+        run: bandit -c _bandit.yaml -ll -r .
+      - name: Go format check
+        run: test -z "$(gofmt -l ./client)"
 
   Client-Unit-Tests:
     runs-on: ubuntu-latest
@@ -38,7 +51,6 @@ jobs:
         with:
           go-version-file: './client/go.mod'
           cache-dependency-path: './client/go.sum'
-        id: go
       - name: Go test
         working-directory: ./client
         run: go test -coverprofile=coverage-go.out
@@ -51,9 +63,8 @@ jobs:
           fail_ci_if_error: false
 
   Maya-Port-Unit-Tests:
-    # Pure-Python tests for Maya port modules that have no Maya/Qt
-    # dependencies (PRX coordinate converters, locator-state registries,
-    # PRX format read/write round-trip).
+    # Pure-Python tests for Maya port modules with no Maya/Qt dependency:
+    # PRX coordinate converters, locator-state registries, PRX round-trip.
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -68,6 +79,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
       - name: Install coverage
         run: python -m pip install coverage
       - name: Run Maya-port unit tests
@@ -98,7 +110,6 @@ jobs:
         with:
           go-version-file: './client/go.mod'
           cache-dependency-path: './client/go.sum'
-        id: go
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -108,7 +119,7 @@ jobs:
       - name: Store the build
         uses: actions/upload-artifact@v4
         with:
-          name: blenderkit-maya-PR${{ github.event.pull_request.number }}-${{ github.sha }}
+          name: blenderkit-maya-${{ github.event.pull_request.number || github.sha }}
           path: |
             out
             !out/blenderkit.zip
