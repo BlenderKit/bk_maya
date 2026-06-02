@@ -1,1 +1,1 @@
-"""Test utilities for the blenderkit_maya client."""
+"""Test utilities for the bk_maya client."""

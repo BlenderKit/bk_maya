@@ -119,7 +119,7 @@ jobs:
       - name: Store the build
         uses: actions/upload-artifact@v4
         with:
-          name: blenderkit-maya-${{ github.event.pull_request.number || github.sha }}
+          name: bk_maya-${{ github.event.pull_request.number || github.sha }}
           path: |
             out
             !out/blenderkit.zip
