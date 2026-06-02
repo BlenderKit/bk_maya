@@ -14,11 +14,10 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from typing import Any, Callable
 
 from ..api import client as api
-from . import auth, client_lib
+from . import auth, client_lib, prefs as _prefs_mod
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +30,8 @@ ErrorCallback = Callable[[str], None]
 # ── tempdir per asset type (mirrors Blender's ``get_temp_dir``) ──────────────
 
 def _tempdir_for(asset_type: str) -> str:
-    base = os.path.join(tempfile.gettempdir(), "bk_maya", f"{asset_type}_search")
+    base = os.path.join(_prefs_mod.prefs.global_dir_resolved(),
+                        f"{asset_type}_search")
     os.makedirs(base, exist_ok=True)
     return base
 

@@ -283,6 +283,9 @@ class _State:
     has_hit:    bool  = False
     hit_floor:  bool  = False
     active:     bool  = False
+    # world-space surface normal at the raycast hit; (0,1,0) when the
+    # cursor is on the floor plane or no surface was struck.
+    surface_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
     # proxor line data (may be empty list)
     proxor_lines: list[list[tuple[float, float, float]]] = field(default_factory=list)
 
@@ -369,12 +372,15 @@ def _get_viewport_widget() -> "QWidget | None":
     return best
 
 
-def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, bool]":
+def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, tuple, bool]":
     """Cast a ray from viewport pixel (vp_x, vp_y) (Qt coords).
 
-    Returns ``(has_hit, (x,y,z), hit_floor)``.  ``hit_floor`` is True when the
-    Y=0 fallback plane was used because no scene geometry was struck.
+    Returns ``(has_hit, (x,y,z), (nx,ny,nz), hit_floor)``.  ``hit_floor``
+    is True when the Y=0 fallback plane was used because no scene geometry
+    was struck; the normal is then ``(0,1,0)``.  When no hit at all (ray
+    parallel to the floor) the normal is also ``(0,1,0)``.
     """
+    floor_normal = (0.0, 1.0, 0.0)
     try:
         import maya.api.OpenMaya as om2
         import maya.api.OpenMayaUI as omui2
@@ -396,7 +402,8 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, bool]":
         ray_dir.normalize()
 
         closest_dist = float("inf")
-        best_hit: tuple | None = None
+        best_hit:    tuple | None = None
+        best_normal: tuple | None = None
 
         it = om2.MItDag(om2.MItDag.kDepthFirst, om2.MFn.kMesh)
         while not it.isDone():
@@ -415,6 +422,7 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, bool]":
                 )
                 if result is not None:
                     hit_pt = result[0]
+                    hit_face = int(result[2]) if len(result) > 2 else -1
                     dx = hit_pt.x - near_pt.x
                     dy = hit_pt.y - near_pt.y
                     dz = hit_pt.z - near_pt.z
@@ -422,12 +430,35 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, bool]":
                     if 0.001 < d < closest_dist:
                         closest_dist = d
                         best_hit = (float(hit_pt.x), float(hit_pt.y), float(hit_pt.z))
+                        nrm = None
+                        if hit_face >= 0:
+                            try:
+                                nv = fn.getPolygonNormal(hit_face, om2.MSpace.kWorld)
+                                nrm = (float(nv.x), float(nv.y), float(nv.z))
+                            except Exception:
+                                nrm = None
+                        if nrm is None:
+                            try:
+                                nv, _face = fn.getClosestNormal(
+                                    om2.MPoint(*best_hit), om2.MSpace.kWorld,
+                                )
+                                nrm = (float(nv.x), float(nv.y), float(nv.z))
+                            except Exception:
+                                nrm = floor_normal
+                        # Flip the normal toward the camera so back-face
+                        # hits don't invert the asset.
+                        if (nrm[0] * ray_dir.x + nrm[1] * ray_dir.y
+                                + nrm[2] * ray_dir.z) > 0.0:
+                            nrm = (-nrm[0], -nrm[1], -nrm[2])
+                        # Normalize defensively.
+                        ln = math.sqrt(nrm[0]**2 + nrm[1]**2 + nrm[2]**2) or 1.0
+                        best_normal = (nrm[0]/ln, nrm[1]/ln, nrm[2]/ln)
             except Exception:
                 pass
             it.next()
 
         if best_hit:
-            return True, best_hit, False
+            return True, best_hit, (best_normal or floor_normal), False
 
         # Floor plane fallback
         ox, oy, oz = near_pt.x, near_pt.y, near_pt.z
@@ -440,18 +471,18 @@ def _raycast_scene(vp_x: int, vp_y: int) -> "tuple[bool, tuple, bool]":
                 # Floor counts as a HIT so the bbox snaps to it (cyan in the
                 # draw override).  Returning has_hit=False would leave the
                 # bbox at world origin which is never what the user wants.
-                return True, (ox + t*dx, 0.0, oz + t*dz), True
+                return True, (ox + t*dx, 0.0, oz + t*dz), floor_normal, True
 
         # No hit and the ray is parallel to the floor — project the camera
         # eye-line forward by an arbitrary distance so the bbox is still
         # visible at the cursor depth instead of snapping back to origin.
         t = 1000.0  # 10 m in Maya cm units; comfortably within view
-        return False, (ox + t*dx, oy + t*dy, oz + t*dz), False
+        return False, (ox + t*dx, oy + t*dy, oz + t*dz), floor_normal, False
 
     except Exception as exc:
         log.debug("Raycast error: %s", exc)
 
-    return False, (0.0, 0.0, 0.0), False
+    return False, (0.0, 0.0, 0.0), floor_normal, False
 
 
 def _refresh_viewport(*, light: bool = False) -> None:
@@ -570,13 +601,50 @@ def _delete_locator() -> None:
 # Proxor loader (optional – falls back to bbox draw when absent)
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _proxor_cache_path(asset_data: dict[str, Any]) -> str:
+    """Return the on-disk path where this asset's ``.prxc`` should live.
+
+    Mirrors the Blender add-on convention:
+    ``<global_dir>/tmp/<asset_type>_search/<assetBaseId>.prxc``.
+    """
+    asset_base_id = asset_data.get("assetBaseId", "")
+    if not asset_base_id:
+        return ""
+    asset_type = asset_data.get("assetType", "model") or "model"
+    try:
+        from bk_maya.core import prefs as _prefs_mod
+        base = _prefs_mod.prefs.global_dir_resolved()
+    except Exception:
+        base = os.path.expanduser("~/blenderkit_data")
+    return os.path.join(base, "tmp", f"{asset_type}_search", f"{asset_base_id}.prxc")
+
+
+def _prxc_download_url(asset_data: dict[str, Any]) -> str:
+    """Pluck the signed ``.prxc`` download URL out of ``files[]`` (if any)."""
+    for f in asset_data.get("files") or []:
+        if (f.get("fileType") == "prxc") and f.get("downloadUrl"):
+            return str(f["downloadUrl"])
+    return ""
+
+
 def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
-    """Try to load the proxor wireframe for *asset_data* from local cache."""
+    """Try to load the proxor wireframe for *asset_data* from local cache.
+
+    Returns an empty list when the ``.prxc`` is not yet on disk; the
+    drag session will then trigger an async download via
+    :meth:`DragSession._start_proxor_fetch`.
+    """
     asset_base_id = asset_data.get("assetBaseId", "")
     if not asset_base_id:
         return []
 
-    candidates = []
+    # Primary location matches the path we'll ask the client to download to.
+    candidates: list[str] = []
+    primary = _proxor_cache_path(asset_data)
+    if primary:
+        candidates.append(primary)
+
+    # Backwards-compat lookups in older cache layouts.
     try:
         from bk_maya.core import global_vars as gv  # type: ignore
         for attr in ("CACHE_DIR", "PROXOR_DIR", "BLENDERKIT_DATA_DIR"):
@@ -597,25 +665,25 @@ def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
     if not prxc_path:
         return []
 
-    try:
-        from bl_proxor import prx_format as pf  # type: ignore
-        payload = pf.read_prx(prxc_path)
-        data = payload.get("data", {})
-        positions = data.get("line", {}).get("pos", [])
+    return _parse_prxc_to_segments(prxc_path)
 
-        # Proxor stores positions in meters (Blender), and Z is up. Convert to Maya's cm units and swap Y/Z.
+
+def _parse_prxc_to_segments(prxc_path: str) -> list[list[tuple]]:
+    """Read a ``.prxc`` from disk and return Maya world-space line segments."""
+    try:
+        from bk_maya.bk_proxor import prx_format as pf
+        from bk_proxor._maya.draw import prx_to_line_segments
+    except Exception as exc:
+        log.debug("bk_proxor unavailable: %s", exc)
+        return []
+    try:
+        payload = pf.read_prx(prxc_path)
         scale = _meters_to_internal()
-        lines = []
-        for i in range(0, len(positions) - 1, 2):
-            ax, ay, az = (float(v) for v in positions[i][:3])
-            bx, by, bz = (float(v) for v in positions[i + 1][:3])
-            a = (ax * scale, az * scale, ay * scale)
-            b = (bx * scale, bz * scale, by * scale)
-            lines.append([a, b])
-        log.debug("Proxor loaded for %s: %d segments", asset_base_id, len(lines))
+        lines = prx_to_line_segments(payload, world_scale=scale, axis_swap_yz=True)
+        log.debug("Proxor loaded from %s: %d segments", prxc_path, len(lines))
         return lines
     except Exception as exc:
-        log.debug("Proxor load failed for %s: %s", asset_base_id, exc)
+        log.debug("Proxor parse failed for %s: %s", prxc_path, exc)
         return []
 
 
@@ -765,6 +833,12 @@ class DragSession(QObject):
         else:
             self._publish_bbox_to_locator()
             self._publish_proxor_to_locator()
+
+        # If the .prxc wasn't on disk yet, ask the local client to fetch
+        # it now; when it lands the registry callback swaps the bbox out
+        # for the wireframe mid-drag (Blender-style).
+        if not _active_state.proxor_lines:
+            self._start_proxor_fetch(asset_data)
 
         # Override cursor with thumbnail
         QApplication.setOverrideCursor(_make_cursor(thumb_path))
@@ -948,10 +1022,11 @@ class DragSession(QObject):
         wheel = _drain_wheel_accum()
         rotation_changed = False
         if wheel != 0:
-            _active_state.rotation_y += (wheel / 120.0) * WHEEL_STEP
+            # Wheel-up = positive raw delta on Windows. Negate so wheel-up
+            # rotates the gizmo in the natural "away from camera" direction
+            # around its local +Y / surface normal.
+            _active_state.rotation_y -= (wheel / 120.0) * WHEEL_STEP
             rotation_changed = True
-            log.info("[POLL WHEEL] raw=%d rot_y=%.1f",
-                     wheel, _active_state.rotation_y)
 
         # ── 3. Cursor position → raycast ──────────────────────────────────
         vp = self._vp_widget or _get_viewport_widget()
@@ -992,13 +1067,15 @@ class DragSession(QObject):
         last_px = getattr(self, "_last_cursor_px", None)
         cur_px = (local.x(), local.y(), inside)
         if inside and cur_px != last_px:
-            has_hit, loc, on_floor = _raycast_scene(local.x(), local.y())
+            has_hit, loc, normal, on_floor = _raycast_scene(local.x(), local.y())
             if (loc != _active_state.location
                     or has_hit != _active_state.has_hit
-                    or on_floor != _active_state.hit_floor):
-                _active_state.location  = loc
-                _active_state.has_hit   = has_hit
-                _active_state.hit_floor = on_floor
+                    or on_floor != _active_state.hit_floor
+                    or normal != _active_state.surface_normal):
+                _active_state.location       = loc
+                _active_state.has_hit        = has_hit
+                _active_state.hit_floor      = on_floor
+                _active_state.surface_normal = normal
                 position_changed = True
         self._last_cursor_px = cur_px
 
@@ -1010,12 +1087,18 @@ class DragSession(QObject):
             import maya.cmds as cmds
             if position_changed:
                 loc = _active_state.location
+                nrm = _active_state.surface_normal
                 cmds.setAttr(self._locator_name + ".location",
                              loc[0], loc[1], loc[2], type="double3")
                 cmds.setAttr(self._locator_name + ".hasHit",
                              bool(_active_state.has_hit))
                 cmds.setAttr(self._locator_name + ".hitFloor",
                              bool(_active_state.hit_floor))
+                try:
+                    cmds.setAttr(self._locator_name + ".surfaceNormal",
+                                 nrm[0], nrm[1], nrm[2], type="double3")
+                except Exception:
+                    pass
             if rotation_changed:
                 cmds.setAttr(self._locator_name + ".rotationY",
                              _active_state.rotation_y)
@@ -1049,7 +1132,7 @@ class DragSession(QObject):
         if self._locator_name is None:
             return
         try:
-            from bk_maya.plugins import placement_locator as plc
+            from bk_maya.core import locator_state as plc
             plc.set_proxor_lines(self._locator_name,
                                  list(_active_state.proxor_lines or []))
             # Seed the label with the asset name; status fills in once
@@ -1060,10 +1143,105 @@ class DragSession(QObject):
             except Exception:
                 pass
             plc.set_label(self._locator_name, name=asset_name, status="Ready to drop")
+            # Mirror to viewport HUD so the user always sees current step,
+            # regardless of camera framing or draw-override font availability.
+            try:
+                import maya.cmds as cmds
+                msg = (f"<hl>{asset_name}</hl><br>Ready to drop"
+                       if asset_name else "Ready to drop")
+                cmds.inViewMessage(amg=msg, pos="topCenter", fade=False,
+                                   clear="topCenter", fontSize=14)
+            except Exception:
+                pass
             log.info("[PROXOR] published %d polyline(s) on %s",
                      len(_active_state.proxor_lines or []), self._locator_name)
         except Exception as exc:
             log.debug("Could not publish proxor lines: %s", exc)
+
+    def _start_proxor_fetch(self, asset_data: dict[str, Any]) -> None:
+        """Kick off an async ``.prxc`` download via the local Go client.
+
+        The HTTP work (``ensure_running`` + POST) runs on a daemon thread
+        — ``ensure_running`` can block up to 8 s spawning the client and
+        the POST itself can take seconds, and Maya's main thread MUST NOT
+        block during a drag (the viewport freezes and no bbox is drawn).
+        The completion callback is delivered later by the QTimer-driven
+        ``/report`` poller, which is already on the main thread.
+        """
+        asset_type = asset_data.get("assetType")
+        if asset_type not in ("model", "printable"):
+            return
+        url = _prxc_download_url(asset_data)
+        if not url:
+            return
+        path = _proxor_cache_path(asset_data)
+        if not path:
+            return
+        asset_base_id = asset_data.get("assetBaseId", "")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except OSError as exc:
+            log.debug("Could not create proxor cache dir: %s", exc)
+            return
+
+        try:
+            from bk_maya.core import auth, client_lib
+        except Exception as exc:
+            log.debug("client_lib unavailable for proxor fetch: %s", exc)
+            return
+
+        # Register the callback now (main thread, cheap, lock-protected) so a
+        # very fast /report delivery still finds a subscriber.
+        try:
+            client_lib.prxc_registry.register(asset_base_id, self._on_proxor_ready)
+        except Exception as exc:
+            log.debug("prxc_registry.register failed: %s", exc)
+            return
+
+        def _worker() -> None:
+            try:
+                client_lib.ensure_running()
+                api_key = ""
+                try:
+                    api_key = auth.get_api_key() or ""
+                except Exception:
+                    pass
+                task_id = client_lib.asset_prxc_download(
+                    asset_base_id=asset_base_id,
+                    download_url=url,
+                    file_path=path,
+                    api_key=api_key,
+                )
+                log.info("[PROXOR] download scheduled task=%s -> %s", task_id, path)
+            except Exception as exc:
+                log.debug("asset_prxc_download failed: %s", exc)
+                try:
+                    client_lib.prxc_registry.unregister(asset_base_id)
+                except Exception:
+                    pass
+
+        import threading
+        threading.Thread(
+            target=_worker,
+            name=f"bk-prxc-fetch-{asset_base_id[:8]}",
+            daemon=True,
+        ).start()
+
+    def _on_proxor_ready(self, prxc_path: str) -> None:
+        """Registry callback: ``.prxc`` is on disk — parse and republish."""
+        if not _active_state.active:
+            return  # drag already ended; nothing to do
+        try:
+            lines = _parse_prxc_to_segments(prxc_path)
+        except Exception as exc:
+            log.debug("Proxor swap-in parse failed: %s", exc)
+            return
+        if not lines:
+            return
+        _active_state.proxor_lines = lines
+        self._publish_proxor_to_locator()
+        _refresh_viewport(light=True)
+        log.info("[PROXOR] live swap-in: %d segments", len(lines))
 
     def _on_wheel(self, event: QEvent) -> bool:
         # We accept wheel events anywhere while a drag session is active
@@ -1090,9 +1268,8 @@ class DragSession(QObject):
             if not vp.rect().contains(vp.mapFromGlobal(gp)):
                 return False
 
-        step = WHEEL_STEP if delta > 0 else -WHEEL_STEP
+        step = -WHEEL_STEP if delta > 0 else WHEEL_STEP
         _active_state.rotation_y += step
-        log.warning("[WHEEL] delta=%s new rot_y=%.1f", delta, _active_state.rotation_y)
         if self._locator_name is not None:
             try:
                 import maya.cmds as cmds
@@ -1146,6 +1323,7 @@ class DragSession(QObject):
                 location=loc,
                 rotation_y=-rot_y,
                 locator_name=self._locator_name or "",
+                surface_normal=_active_state.surface_normal,
             )
         except ModuleNotFoundError:
             log.info(
@@ -1159,6 +1337,16 @@ class DragSession(QObject):
     def _cleanup(self) -> None:
         global _active_state
         _active_state.active = False
+
+        # Drop any pending proxor-download subscription so a late /report
+        # for this asset doesn't fire on a dead drag session.
+        try:
+            abid = (_active_state.asset_data or {}).get("assetBaseId", "")
+            if abid:
+                from bk_maya.core import client_lib
+                client_lib.prxc_registry.unregister(abid)
+        except Exception:
+            pass
 
         try:
             if self._poll_timer is not None:
@@ -1197,6 +1385,7 @@ class DragSession(QObject):
         try:
             import maya.cmds as cmds
             cmds.inViewMessage(clear="botCenter")
+            cmds.inViewMessage(clear="topCenter")
         except Exception:
             pass
 

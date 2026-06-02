@@ -202,6 +202,13 @@ def uninitializePlugin(plugin: om2.MObject) -> None:
     except Exception as exc:
         print(f"[BlenderKit] Menu removal error: {exc}")
 
+    # Stop the local blenderkit-client process we spawned (if any).
+    try:
+        from bk_maya.core import client_lib  # noqa: PLC0415
+        client_lib.shutdown()
+    except Exception as exc:
+        print(f"[BlenderKit] Client shutdown error: {exc}")
+
     # Leave the placement_locator plug-in loaded – it has its own
     # uninitializePlugin which will run when Maya itself unloads it (or
     # when the user does `cmds.unloadPlugin("placement_locator")`).  We do

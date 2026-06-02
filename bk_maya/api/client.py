@@ -176,6 +176,7 @@ def build_search_url(
         q_tokens.append(urllib.parse.quote_plus(query))
     q_tokens.append(f"asset_type:{asset_type}")
     q_tokens.append("sexualizedContent:")
+    q_tokens.append("verification_status:validated")
     q_tokens.append(f"order:{effective_order}")
     for k, v in filter_params.items():
         q_tokens.append(f"{k}:{urllib.parse.quote_plus(str(v))}")
@@ -253,6 +254,7 @@ def search(
         q_tokens.append(urllib.parse.quote_plus(query))
     q_tokens.append(f"asset_type:{asset_type}")
     q_tokens.append("sexualizedContent:")   # empty value → exclude NSFW
+    q_tokens.append("verification_status:validated")  # only show approved assets
     q_tokens.append(f"order:{effective_order}")
 
     # Embed remaining filter params inside the query token (Blender-style).
