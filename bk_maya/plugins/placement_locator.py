@@ -75,6 +75,22 @@ def clear_proxor_lines(node_name: str) -> None:
     _state.clear_proxor_lines(node_name)
 
 
+def set_proxor_mesh(node_name: str, verts: list) -> None:
+    """Register a flat list of triangle vertices for *node_name*.
+
+    *verts* must already be in Maya local space (axis-swapped, scaled).
+    Pass ``[]`` to clear.
+    """
+    if verts:
+        _state.set_proxor_mesh(node_name, verts)
+    else:
+        _state.clear_proxor_mesh(node_name)
+
+
+def clear_proxor_mesh(node_name: str) -> None:
+    _state.clear_proxor_mesh(node_name)
+
+
 def set_label(node_name: str, name: str | None = None,
               status: str | None = None) -> None:
     """Update the on-screen labels for *node_name*."""
@@ -166,6 +182,92 @@ def _local_to_world(pt: tuple, loc: tuple, rot_y: float, normal: tuple) -> tuple
     spun = _rotate_y(pt, rot_y)
     oriented = _align_y_to_normal(spun, normal)
     return (loc[0] + oriented[0], loc[1] + oriented[1], loc[2] + oriented[2])
+
+
+# --- Proxor hologram-mesh draw ---------------------------------------------
+# Mirrors the Blender addon's draw_proxor_download() look (mesh + vertical
+# alpha gradient + progress reveal sweep), minus the glowing back-face outline.
+#
+# The PRX mesh section stores triangle vertices consecutively (3 verts per
+# triangle, no index buffer).  We:
+#  * transform each vert to world space (rotate around local-Y, align to
+#    the surface normal, translate to *loc*);
+#  * compute a per-vertex RGBA where alpha = hologram-gradient * reveal-band
+#    using the vertex's *local-Y* (height above the ground), matching
+#    bl_proxor.draw._apply_vertical_gradient();
+#  * cull whole triangles fully above the reveal band so we don't pay for
+#    invisible geometry.
+_PROXOR_HOLO_RGB         = (0.0, 1.0, 0.0)   # green – matches addon's draw_proxor_download default
+_PROXOR_IDLE_RGB         = (0.0, 1.0, 0.0)
+_PROXOR_GRAD_LOW         = 0.35
+_PROXOR_GRAD_HIGH        = 1.00
+_PROXOR_BAND_WIDTH       = 0.10
+_PROXOR_ALPHA_TOP        = 0.45
+
+
+def _draw_proxor_mesh(drawManager, verts_local: list, loc: tuple,
+                      rot_y: float, normal: tuple,
+                      y_min: float, y_max: float,
+                      vis_pct_float: float, downloading: bool) -> None:
+    """Draw the proxor mesh as translucent triangles with reveal sweep.
+
+    *verts_local* is a flat list of ``(x, y, z)`` tuples, 3 consecutive
+    verts = 1 triangle, in the locator's local space (Maya internal units).
+    """
+    n = len(verts_local) // 3
+    if n <= 0:
+        return
+
+    y_range = max(1e-6, y_max - y_min)
+    half_band = _PROXOR_BAND_WIDTH * 0.5
+    # smoothstep band centre sweeps from below mesh (vis=0) to above (vis=1)
+    band_centre = -half_band + vis_pct_float * (1.0 + _PROXOR_BAND_WIDTH)
+    band_low    = band_centre - half_band
+    band_high   = band_centre + half_band
+    band_span   = max(band_high - band_low, 1e-8)
+
+    r, g, b = _PROXOR_HOLO_RGB if downloading else _PROXOR_IDLE_RGB
+
+    pos_array = om2.MPointArray()
+    col_array = om2.MColorArray()
+
+    for tri in range(n):
+        i0 = tri * 3
+        v0 = verts_local[i0]
+        v1 = verts_local[i0 + 1]
+        v2 = verts_local[i0 + 2]
+        # Quick triangle cull: if all 3 verts are above the reveal band,
+        # the whole triangle is invisible -> skip.
+        t0 = (v0[1] - y_min) / y_range
+        t1 = (v1[1] - y_min) / y_range
+        t2 = (v2[1] - y_min) / y_range
+        if min(t0, t1, t2) >= band_high:
+            continue
+
+        for (vert, t) in ((v0, t0), (v1, t1), (v2, t2)):
+            wx, wy, wz = _local_to_world(vert, loc, rot_y, normal)
+            pos_array.append(om2.MPoint(wx, wy, wz))
+            t_c = max(0.0, min(1.0, t))
+            v_mult        = _PROXOR_GRAD_LOW + (_PROXOR_GRAD_HIGH - _PROXOR_GRAD_LOW) * t_c
+            hologram_a    = 1.0 + (_PROXOR_ALPHA_TOP - 1.0) * t_c
+            s             = max(0.0, min(1.0, (t_c - band_low) / band_span))
+            reveal_a      = 1.0 - (s * s * (3.0 - 2.0 * s))  # smoothstep
+            a             = hologram_a * reveal_a
+            col_array.append(om2.MColor((r * v_mult, g * v_mult, b * v_mult, a)))
+
+    if len(pos_array) == 0:
+        return
+
+    try:
+        drawManager.mesh(omr2.MUIDrawManager.kTriangles, pos_array,
+                         None, col_array)
+    except Exception as exc:  # noqa: BLE001
+        # Older MUIDrawManager bindings may use kTris instead of kTriangles
+        try:
+            drawManager.mesh(omr2.MUIDrawManager.kTris, pos_array,
+                             None, col_array)
+        except Exception:
+            log.debug("proxor mesh draw failed: %s", exc)
 
 
 def _bbox_corners(loc: tuple, rot_y: float, mn: tuple, mx: tuple,
@@ -385,6 +487,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         except Exception:
             node_name = ""
         proxor_lines = _state.get_proxor_lines(node_name)
+        proxor_mesh  = _state.get_proxor_mesh(node_name)
         label_entry  = _state.get_label(node_name)
 
         # Compose snap dict for drawing
@@ -399,6 +502,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             "bbox_max": bb_max,
             "surface_normal": surface_normal,
             "proxor_lines": proxor_lines,
+            "proxor_mesh":  proxor_mesh,
             "label_name":   label_entry.get("name", ""),
             "label_status": label_entry.get("status", ""),
             "active": True,
@@ -446,15 +550,16 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         drawManager.beginDrawable()
 
         proxor   = snap.get("proxor_lines") or []
+        proxor_mesh = snap.get("proxor_mesh") or []
+        has_proxor = bool(proxor) or (len(proxor_mesh) >= 3)
         cx, cy, cz = loc
         height   = max(1e-3, bbox_max[1] - bbox_min[1])
         fill_top = bbox_min[1] + dl_prog * height       # local-space y cut-off
 
         # ── Bounding-box edges + orientation arrow lip ────────────────
-        #  Hide the outer bbox when a proxor wireframe is available — the
-        #  proxor itself communicates the shape better, and the user asked
-        #  for "only the mesh, no glowing outline" in Maya.
-        if not proxor:
+        #  Hide the outer bbox when a proxor wireframe or mesh is available —
+        #  the proxor itself communicates the shape better.
+        if not has_proxor:
             drawManager.setColor(col)
             drawManager.setLineWidth(3.0)
             corners = [om2.MPoint(*c) for c in _bbox_corners(loc, rot_y, bbox_min, bbox_max, nrm)]
@@ -473,6 +578,17 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                 drawManager.setLineWidth(2.0)
                 for ai, bi in _BBOX_EDGES:
                     drawManager.line(fill_corners[ai], fill_corners[bi])
+
+        # ── Proxor hologram mesh (filled triangles) ─────────────────────
+        if proxor_mesh and len(proxor_mesh) >= 3:
+            _draw_proxor_mesh(
+                drawManager,
+                proxor_mesh,
+                loc, rot_y, nrm,
+                bbox_min[1], bbox_max[1],
+                dl_prog if downloading else 1.0,
+                downloading,
+            )
 
         # ── Proxor wireframe (optional) ─────────────────────────────────
         if proxor:

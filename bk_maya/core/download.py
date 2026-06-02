@@ -400,6 +400,7 @@ class _DownloadController:
         try:
             from . import locator_state
             locator_state.clear_proxor_lines(self.locator_name or "")
+            locator_state.clear_proxor_mesh(self.locator_name or "")
             locator_state.clear_label(self.locator_name or "")
         except Exception:  # noqa: BLE001
             pass

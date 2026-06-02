@@ -47,6 +47,38 @@ jobs:
           flags: go
           fail_ci_if_error: false
 
+  Maya-Port-Unit-Tests:
+    # Pure-Python tests for Maya port modules that have no Maya/Qt
+    # dependencies (PRX coordinate converters, locator-state registries,
+    # PRX format read/write round-trip).
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install coverage
+        run: python -m pip install coverage
+      - name: Run Maya-port unit tests
+        run: |
+          python -m coverage run --source=bk_maya/bk_proxor/src/bk_proxor,bk_maya/core \
+              -m unittest \
+                  tests.test_proxor_maya_draw \
+                  tests.test_locator_state \
+                  tests.test_prx_format_roundtrip
+          python -m coverage xml -o coverage-maya-port.xml
+      - name: Upload Maya-port coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-maya-port.xml
+          flags: maya-port
+          fail_ci_if_error: false
+
   Build:
     runs-on: ubuntu-latest
     steps:

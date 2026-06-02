@@ -288,6 +288,9 @@ class _State:
     surface_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
     # proxor line data (may be empty list)
     proxor_lines: list[list[tuple[float, float, float]]] = field(default_factory=list)
+    # proxor hologram mesh (flat list of triangle vertices, 3 per tri,
+    # already in Maya local space; may be empty)
+    proxor_mesh: list[tuple[float, float, float]] = field(default_factory=list)
 
 
 # The active state — read by the draw override every frame.
@@ -627,16 +630,16 @@ def _prxc_download_url(asset_data: dict[str, Any]) -> str:
     return ""
 
 
-def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
-    """Try to load the proxor wireframe for *asset_data* from local cache.
+def _load_proxor_payload(asset_data: dict[str, Any]) -> dict[str, Any]:
+    """Return ``{"lines": [...], "mesh": [...]}`` parsed from local cache.
 
-    Returns an empty list when the ``.prxc`` is not yet on disk; the
-    drag session will then trigger an async download via
+    Empty values mean the ``.prxc`` isn't on disk yet — the drag/click
+    session will then trigger an async download via
     :meth:`DragSession._start_proxor_fetch`.
     """
     asset_base_id = asset_data.get("assetBaseId", "")
     if not asset_base_id:
-        return []
+        return {"lines": [], "mesh": []}
 
     # Primary location matches the path we'll ask the client to download to.
     candidates: list[str] = []
@@ -663,28 +666,126 @@ def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
             prxc_path = c
             break
     if not prxc_path:
-        return []
+        return {"lines": [], "mesh": []}
 
-    return _parse_prxc_to_segments(prxc_path)
+    return _parse_prxc(prxc_path)
 
 
-def _parse_prxc_to_segments(prxc_path: str) -> list[list[tuple]]:
-    """Read a ``.prxc`` from disk and return Maya world-space line segments."""
+# Back-compat shim — some external callers/tests may still use the old name.
+def _load_proxor_lines(asset_data: dict[str, Any]) -> list[list[tuple]]:
+    return _load_proxor_payload(asset_data).get("lines", [])
+
+
+def _parse_prxc(prxc_path: str) -> dict[str, Any]:
+    """Read a ``.prxc`` from disk and return both lines and mesh data.
+
+    Returns ``{"lines": [...polylines...], "mesh": [...flat tri verts...]}``
+    in Maya local space (axis-swapped, scaled to internal units).
+    """
+    out: dict[str, Any] = {"lines": [], "mesh": []}
     try:
         from bk_maya.bk_proxor import prx_format as pf
-        from bk_proxor._maya.draw import prx_to_line_segments
+        from bk_proxor._maya.draw import (
+            prx_to_line_segments,
+            prx_to_mesh_triangles,
+        )
     except Exception as exc:
         log.debug("bk_proxor unavailable: %s", exc)
-        return []
+        return out
     try:
         payload = pf.read_prx(prxc_path)
         scale = _meters_to_internal()
-        lines = prx_to_line_segments(payload, world_scale=scale, axis_swap_yz=True)
-        log.debug("Proxor loaded from %s: %d segments", prxc_path, len(lines))
-        return lines
+        out["lines"] = prx_to_line_segments(payload, world_scale=scale, axis_swap_yz=False)
+        out["mesh"]  = prx_to_mesh_triangles(payload, world_scale=scale, axis_swap_yz=False)
+        log.debug("Proxor loaded from %s: %d segments, %d mesh verts",
+                  prxc_path, len(out["lines"]), len(out["mesh"]))
     except Exception as exc:
         log.debug("Proxor parse failed for %s: %s", prxc_path, exc)
-        return []
+    return out
+
+
+# Back-compat shim.
+def _parse_prxc_to_segments(prxc_path: str) -> list[list[tuple]]:
+    return _parse_prxc(prxc_path).get("lines", [])
+
+
+def _start_proxor_fetch_for_locator(asset_data: dict[str, Any],
+                                    locator_name: str) -> None:
+    """Async ``.prxc`` fetch whose completion callback writes directly to
+    *locator_name* via ``locator_state``. Used by ``place_at_origin`` so
+    the proxor swap-in does not depend on ``DragSession`` being active.
+    """
+    asset_type = asset_data.get("assetType")
+    if asset_type not in ("model", "printable"):
+        return
+    url = _prxc_download_url(asset_data)
+    if not url:
+        return
+    path = _proxor_cache_path(asset_data)
+    if not path:
+        return
+    asset_base_id = asset_data.get("assetBaseId", "")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError as exc:
+        log.debug("Could not create proxor cache dir: %s", exc)
+        return
+    try:
+        from bk_maya.core import auth, client_lib
+        from bk_maya.core import locator_state as plc
+    except Exception as exc:
+        log.debug("client_lib unavailable for proxor fetch: %s", exc)
+        return
+
+    def _on_ready(prxc_path: str) -> None:
+        try:
+            payload = _parse_prxc(prxc_path)
+        except Exception as exc:
+            log.debug("Proxor swap-in parse failed: %s", exc)
+            return
+        try:
+            plc.set_proxor_lines(locator_name, list(payload.get("lines", [])))
+            plc.set_proxor_mesh(locator_name, list(payload.get("mesh", [])))
+            _refresh_viewport(light=True)
+            log.info("[PROXOR] locator-bound swap-in: %d segments, %d mesh-verts",
+                     len(payload.get("lines", [])), len(payload.get("mesh", [])))
+        except Exception as exc:
+            log.debug("locator-bound proxor publish failed: %s", exc)
+
+    try:
+        client_lib.prxc_registry.register(asset_base_id, _on_ready)
+    except Exception as exc:
+        log.debug("prxc_registry.register failed: %s", exc)
+        return
+
+    def _worker() -> None:
+        try:
+            client_lib.ensure_running()
+            api_key = ""
+            try:
+                api_key = auth.get_api_key() or ""
+            except Exception:
+                pass
+            task_id = client_lib.asset_prxc_download(
+                asset_base_id=asset_base_id,
+                download_url=url,
+                file_path=path,
+                api_key=api_key,
+            )
+            log.info("[PROXOR] (locator) download scheduled task=%s -> %s", task_id, path)
+        except Exception as exc:
+            log.debug("asset_prxc_download failed: %s", exc)
+            try:
+                client_lib.prxc_registry.unregister(asset_base_id)
+            except Exception:
+                pass
+
+    import threading
+    threading.Thread(
+        target=_worker,
+        name=f"bk-prxc-fetch-{asset_base_id[:8]}",
+        daemon=True,
+    ).start()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -808,6 +909,7 @@ class DragSession(QObject):
         bbox_min = tuple(min(sw_min[i], sw_max[i]) for i in range(3))
         bbox_max = tuple(max(sw_min[i], sw_max[i]) for i in range(3))
 
+        _prxc = _load_proxor_payload(asset_data)
         _active_state = _State(
             asset_data   = asset_data,
             thumb_path   = thumb_path,
@@ -816,7 +918,8 @@ class DragSession(QObject):
             location     = (0.0, 0.0, 0.0),
             rotation_y   = 0.0,
             active       = True,
-            proxor_lines = _load_proxor_lines(asset_data),
+            proxor_lines = _prxc.get("lines", []),
+            proxor_mesh  = _prxc.get("mesh", []),
         )
         log.info(
             "Drag start: asset=%s bbox_min=%s bbox_max=%s",
@@ -837,7 +940,7 @@ class DragSession(QObject):
         # If the .prxc wasn't on disk yet, ask the local client to fetch
         # it now; when it lands the registry callback swaps the bbox out
         # for the wireframe mid-drag (Blender-style).
-        if not _active_state.proxor_lines:
+        if not _active_state.proxor_lines and not _active_state.proxor_mesh:
             self._start_proxor_fetch(asset_data)
 
         # Override cursor with thumbnail
@@ -1050,6 +1153,7 @@ class DragSession(QObject):
             self._locator_name = _create_locator()
             if self._locator_name is not None:
                 self._publish_bbox_to_locator()
+                self._publish_proxor_to_locator()
             self._delay_locator = False
             log.info("Locator created on viewport entry.")
 
@@ -1128,13 +1232,15 @@ class DragSession(QObject):
             log.warning("Failed to publish bbox to locator: %s", exc)
 
     def _publish_proxor_to_locator(self) -> None:
-        """Register cached proxor polylines for the locator's draw override."""
+        """Register cached proxor data for the locator's draw override."""
         if self._locator_name is None:
             return
         try:
             from bk_maya.core import locator_state as plc
             plc.set_proxor_lines(self._locator_name,
                                  list(_active_state.proxor_lines or []))
+            plc.set_proxor_mesh(self._locator_name,
+                                list(_active_state.proxor_mesh or []))
             # Seed the label with the asset name; status fills in once
             # the download controller starts firing progress events.
             asset_name = ""
@@ -1153,10 +1259,12 @@ class DragSession(QObject):
                                    clear="topCenter", fontSize=14)
             except Exception:
                 pass
-            log.info("[PROXOR] published %d polyline(s) on %s",
-                     len(_active_state.proxor_lines or []), self._locator_name)
+            log.info("[PROXOR] published %d polyline(s), %d mesh-vert(s) on %s",
+                     len(_active_state.proxor_lines or []),
+                     len(_active_state.proxor_mesh or []),
+                     self._locator_name)
         except Exception as exc:
-            log.debug("Could not publish proxor lines: %s", exc)
+            log.debug("Could not publish proxor data: %s", exc)
 
     def _start_proxor_fetch(self, asset_data: dict[str, Any]) -> None:
         """Kick off an async ``.prxc`` download via the local Go client.
@@ -1232,16 +1340,20 @@ class DragSession(QObject):
         if not _active_state.active:
             return  # drag already ended; nothing to do
         try:
-            lines = _parse_prxc_to_segments(prxc_path)
+            payload = _parse_prxc(prxc_path)
         except Exception as exc:
             log.debug("Proxor swap-in parse failed: %s", exc)
             return
-        if not lines:
+        lines = payload.get("lines", [])
+        mesh  = payload.get("mesh", [])
+        if not lines and not mesh:
             return
         _active_state.proxor_lines = lines
+        _active_state.proxor_mesh  = mesh
         self._publish_proxor_to_locator()
         _refresh_viewport(light=True)
-        log.info("[PROXOR] live swap-in: %d segments", len(lines))
+        log.info("[PROXOR] live swap-in: %d segments, %d mesh-verts",
+                 len(lines), len(mesh))
 
     def _on_wheel(self, event: QEvent) -> bool:
         # We accept wheel events anywhere while a drag session is active
@@ -1429,6 +1541,7 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     sw_max = (bbox_max[0], bbox_max[2], bbox_max[1])
     bbox_min = tuple(min(sw_min[i], sw_max[i]) for i in range(3))
     bbox_max = tuple(max(sw_min[i], sw_max[i]) for i in range(3))
+    _prxc = _load_proxor_payload(asset_data)
     _active_state = _State(
         asset_data   = asset_data,
         thumb_path   = thumb_path,
@@ -1437,7 +1550,8 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
         location     = (0.0, 0.0, 0.0),
         rotation_y   = 0.0,
         active       = True,
-        proxor_lines = _load_proxor_lines(asset_data),
+        proxor_lines = _prxc.get("lines", []),
+        proxor_mesh  = _prxc.get("mesh", []),
     )
     log.info("Place at origin: asset=%s bbox_min=%s bbox_max=%s", asset_data.get("name", "?"), bbox_min, bbox_max)
     # Create locator and hand ownership to the download controller via
@@ -1460,5 +1574,27 @@ def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
                 pass
     except Exception as exc:
         log.debug("place_at_origin: locator attr setup failed: %s", exc)
+
+    # Publish bbox + cached proxor so the locator draw override has data
+    # immediately. If the .prxc isn't on disk yet, fetch it asynchronously
+    # — the registry callback will swap it in mid-download (same as drag).
+    try:
+        session._publish_bbox_to_locator()
+        session._publish_proxor_to_locator()
+    except Exception:
+        pass
+    if not _active_state.proxor_lines and not _active_state.proxor_mesh:
+        try:
+            _start_proxor_fetch_for_locator(asset_data, locator)
+        except Exception as exc:
+            log.debug("place_at_origin: proxor fetch failed: %s", exc)
+
     session._trigger_download()
-    session._cleanup()
+    # Release the session so a subsequent click can start a new placement.
+    # The locator is now owned by the download controller, and the proxor
+    # swap-in is wired through the locator-bound callback registered above
+    # (independent of session state).
+    _active_state.active = False
+    session._locator_name = None
+    session._download_started = False
+

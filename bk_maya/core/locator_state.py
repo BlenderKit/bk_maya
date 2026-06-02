@@ -18,6 +18,11 @@ from __future__ import annotations
 # Per-locator proxor wire-frame snapshots (list of polylines).
 proxor_registry: dict[str, list] = {}
 
+# Per-locator proxor mesh snapshots (flat list of triangle vertices,
+# local-space, already axis-swapped to Maya Y-up and scaled to
+# internal units). 3 consecutive verts = 1 triangle.
+proxor_mesh_registry: dict[str, list] = {}
+
 # Per-locator labels ({"name": str, "status": str}).
 label_registry: dict[str, dict[str, str]] = {}
 
@@ -53,3 +58,17 @@ def clear_proxor_lines(node_name: str) -> None:
 
 def get_proxor_lines(node_name: str) -> list:
     return proxor_registry.get(node_name) or []
+
+
+def set_proxor_mesh(node_name: str, verts: list) -> None:
+    if not node_name:
+        return
+    proxor_mesh_registry[node_name] = verts
+
+
+def clear_proxor_mesh(node_name: str) -> None:
+    proxor_mesh_registry.pop(node_name, None)
+
+
+def get_proxor_mesh(node_name: str) -> list:
+    return proxor_mesh_registry.get(node_name) or []
