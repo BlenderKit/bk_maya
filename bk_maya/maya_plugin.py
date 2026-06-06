@@ -15,7 +15,20 @@ import sys
 
 import maya.api.OpenMaya as om2
 
-PLUGIN_VERSION = "0.1.0"
+# Make the addon root (parent of bk_maya/) importable so the centralised
+# version module can be read at import time.
+_BK_DIR = os.path.dirname(os.path.abspath(__file__))  # .../bk_maya
+_ADDON_ROOT = os.path.dirname(_BK_DIR)  # addon root
+if _ADDON_ROOT not in sys.path:
+    sys.path.insert(0, _ADDON_ROOT)
+
+try:
+    from bk_maya._version import get_version as _get_version
+
+    PLUGIN_VERSION = _get_version()
+except Exception:  # pragma: no cover - defensive: never block plug-in load
+    PLUGIN_VERSION = "0.1.dev"
+
 VENDOR = "BlenderKit s.r.o."
 
 

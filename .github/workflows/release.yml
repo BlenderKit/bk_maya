@@ -1,0 +1,139 @@
+name: Release
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Produces a ready-to-use, zero-setup zip and publishes it to GitHub Releases.
+#
+#   • Every merge / push to `main`   → automatic ALPHA prerelease (rolling)
+#   • Every push to `master`         → STABLE release
+#   • Manual "Run workflow" button   → choose the channel yourself
+#
+# The version is computed by `bk_maya/dev.py` as  major.minor.YYMMDDHHmm
+# (with a `-alpha` suffix on the alpha channel) and is baked into the plugin
+# itself (bk_maya/_build_version.py) so users/admins can see exactly what they
+# have installed.
+#
+# FUTURE — external signed client repo:
+#   When the Go client moves to its own repo and ships *signed* binaries, add a
+#   step that downloads them into a folder and pass `--client-build <folder>`
+#   (or set the BLENDERKIT_CLIENT_BINARIES env-var) to the build command below.
+#   `dev.py` already branches on that path, so this is the only change needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel to build'
+        type: choice
+        options: [alpha, stable]
+        default: stable
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # bk_proxor is a submodule required by the build.
+          submodules: recursive
+          # Full history so `git rev-parse HEAD` (the build's commit stamp)
+          # and rolling-tag moves work reliably.
+          fetch-depth: 0
+
+      - name: Determine release channel
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANNEL="${{ github.event.inputs.channel }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            CHANNEL="alpha"
+          else
+            CHANNEL="stable"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Selected channel: $CHANNEL"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: './client/go.mod'
+          cache-dependency-path: './client/go.sum'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build add-on
+        # To switch to the future signed-client repo, download the signed
+        # binaries here and append:  --client-build <downloaded-folder>
+        run: python bk_maya/dev.py build --channel "${{ steps.channel.outputs.channel }}"
+
+      - name: Read built version
+        id: version
+        run: |
+          VERSION=$(python -c "import runpy; print(runpy.run_path('out/blenderkit/bk_maya/_build_version.py')['VERSION'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Built version: $VERSION"
+
+      - name: Name the artifact
+        id: artifact
+        run: |
+          if [ "${{ steps.channel.outputs.channel }}" = "alpha" ]; then
+            # Stable filename so the rolling alpha release always overwrites it.
+            NAME="blenderkit-maya-alpha.zip"
+          else
+            NAME="blenderkit-maya-${{ steps.version.outputs.version }}.zip"
+          fi
+          cp out/blenderkit.zip "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # ── ALPHA: one rolling prerelease, retagged to the latest main commit ──
+      - name: Move rolling `alpha` tag
+        if: steps.channel.outputs.channel == 'alpha'
+        run: |
+          git tag -f alpha
+          git push -f origin alpha
+
+      - name: Publish alpha prerelease
+        if: steps.channel.outputs.channel == 'alpha'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: alpha
+          name: "Alpha (rolling) — ${{ steps.version.outputs.version }}"
+          prerelease: true
+          body: |
+            Automated **alpha** build from `main`.
+
+            - Version: `${{ steps.version.outputs.version }}`
+            - Commit: ${{ github.sha }}
+
+            **Install:** download the zip, unzip it into a Maya `modules`
+            directory, then restart Maya. No extra packages or setup required.
+          files: ${{ steps.artifact.outputs.name }}
+
+      # ── STABLE: a normal, versioned release ───────────────────────────────
+      - name: Publish stable release
+        if: steps.channel.outputs.channel == 'stable'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "BlenderKit for Maya ${{ steps.version.outputs.version }}"
+          prerelease: false
+          body: |
+            BlenderKit for Maya **${{ steps.version.outputs.version }}**.
+
+            - Commit: ${{ github.sha }}
+
+            **Install:** download the zip, unzip it into a Maya `modules`
+            directory, then restart Maya. No extra packages or setup required.
+          files: ${{ steps.artifact.outputs.name }}
