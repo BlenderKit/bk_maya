@@ -14,6 +14,9 @@ client_builds
 # generated vendor directory (populated by `python dev.py vendor` or `python dev.py build`)
 bk_maya/lib/
 
+# generated version stamp (written into builds by `python dev.py build`)
+bk_maya/_build_version.py
+
 # prevent publishing of dynamically created updater cache
 *_updater_status.json
 
