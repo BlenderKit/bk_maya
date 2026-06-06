@@ -72,6 +72,10 @@ and load `maya_plugin.py` from `Windows ▸ Settings/Preferences ▸ Plug-in Man
 - **Automated releases** (see [.github/workflows/release.yml](.github/workflows/release.yml)):
   - merge to **`main`** → rolling **Alpha** prerelease,
   - push to **`master`** or the manual *Run workflow* button → **stable** release.
+- **Zip contents** (`blenderkit-maya-<version>.zip`): the version is in the
+  filename, and the archive holds the `blenderkit.mod` file next to the
+  `blenderkit/` module folder. Unzip **both** into a Maya `modules` directory
+  and restart Maya — see the bundled `INSTALL.txt`.
 - **Build channels locally:**
 
   ```powershell

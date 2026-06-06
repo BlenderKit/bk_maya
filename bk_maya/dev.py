@@ -335,6 +335,67 @@ def write_build_version(addon_build_dir: str, version: str, channel: str) -> Non
     print(f"Stamped version {version} (channel={channel}) -> {target}")
 
 
+# ── Install instructions shipped inside the zip ───────────────────────────────
+# Hardcoded here and written verbatim into INSTALL.txt at build time, so the
+# release zip is self-documenting. Edit the wording here; it is the single
+# source of truth. ``{version}`` / ``{channel}`` are filled in per build.
+INSTALL_TEXT = """\
+BlenderKit for Maya — version {version} ({channel})
+================================================================
+
+This package is self-contained: it bundles the Python code, all required
+third-party libraries, and the BlenderKit client binaries for every platform.
+You do NOT need to pip-install anything or run any setup.
+
+After unzipping you have two items:
+
+    blenderkit.mod      <- the Maya module file
+    blenderkit/         <- the module folder (Python + client binaries)
+
+KEEP THESE TWO TOGETHER. Copy BOTH into one of Maya's "modules" folders:
+
+  Windows : C:\\Users\\<you>\\Documents\\maya\\modules
+  macOS   : ~/Library/Preferences/Autodesk/maya/modules
+  Linux   : ~/maya/modules
+
+  (Create the "modules" folder if it does not exist. A version-specific
+   folder such as .../maya/2026/modules also works.)
+
+So the result looks like:
+
+  .../maya/modules/blenderkit.mod
+  .../maya/modules/blenderkit/
+
+Then:
+
+  1. Start (or restart) Maya.
+  2. Open Windows > Settings/Preferences > Plug-in Manager.
+  3. Find "maya_plugin.py", tick "Loaded" (and "Auto load" to keep it on).
+  4. A "BlenderKit" menu appears in the main menu bar.
+
+To update: replace both "blenderkit.mod" and the "blenderkit" folder with the
+newer ones and restart Maya. The installed version is shown in the Plug-in
+Manager and under BlenderKit > About.
+
+To uninstall: untick the plug-in, then delete "blenderkit.mod" and the
+"blenderkit" folder from the modules directory.
+
+Questions / bugs: https://github.com/BlenderKit/blenderkit_maya/issues
+"""
+
+
+def write_install_text(stage_dir: str, version: str, channel: str) -> None:
+    """Write ``INSTALL.txt`` (and a copy inside the module folder) at build time."""
+    text = INSTALL_TEXT.format(version=version, channel=channel)
+    # Top-level next to blenderkit.mod — the first thing a user sees in the zip.
+    with open(os.path.join(stage_dir, "INSTALL.txt"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    # Also inside the module folder so it travels with an installed copy.
+    with open(os.path.join(stage_dir, "blenderkit", "INSTALL.txt"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print("Wrote INSTALL.txt")
+
+
 def do_build(
     install_at=None,
     include_tests=False,
@@ -343,20 +404,28 @@ def do_build(
     channel=CHANNEL_DEV,
     version=None,
 ):
-    """Build the Maya add-on into ``./out/blenderkit`` and ``./out/blenderkit.zip``.
+    """Build the Maya add-on into ``./out`` and a versioned zip.
 
     Layout produced (mirrors what the runtime expects, see
     ``bk_maya/core/client_lib.py:_addon_root``)::
 
-        out/blenderkit/
-            bk_maya/            # python sources (incl. vendored lib/ and bk_proxor/)
-            bk_maya/_build_version.py  # generated version stamp (see _version.py)
-            client/vX.Y.Z/      # platform client binaries
-            blenderkit.mod      # Maya module registration
+        out/stage/
+            blenderkit.mod          # Maya module file (SIBLING of the folder)
+            INSTALL.txt             # hardcoded install instructions
+            blenderkit/             # the module root
+                bk_maya/            # python sources (incl. vendored lib/ + bk_proxor/)
+                bk_maya/_build_version.py  # generated version stamp
+                client/vX.Y.Z/      # platform client binaries
+                README.md, LICENSE, INSTALL.txt
+        out/blenderkit-maya-<version>.zip   # ships blenderkit.mod + blenderkit/
 
-    - install_at: list of Maya ``modules`` directories where the addon should
-      be copied. The .mod file ships inside the build, so a recursive copy of
-      ``out/blenderkit`` into each location is all that is required.
+    The ``.mod`` lives *next to* (not inside) the ``blenderkit/`` folder because
+    Maya resolves the module path on its ``+ blenderkit <ver> blenderkit`` line
+    relative to the ``.mod`` file's own directory. Users drop BOTH items into a
+    Maya ``modules`` directory.
+
+    - install_at: list of Maya ``modules`` directories. Both ``blenderkit.mod``
+      and the ``blenderkit/`` folder are copied into each location.
     - include_tests: also copy the repo-level ``tests/`` directory into the build.
     - clean_dir: directory to wipe after building (e.g. cached client binaries
       under the user's BlenderKit data dir).
@@ -372,7 +441,8 @@ def do_build(
     print(f"=== Building BlenderKit for Maya {full_version} (channel={channel}) ===")
 
     out_dir = os.path.abspath("out")
-    addon_build_dir = os.path.join(out_dir, "blenderkit")
+    stage_dir = os.path.join(out_dir, "stage")
+    addon_build_dir = os.path.join(stage_dir, "blenderkit")
     shutil.rmtree(out_dir, True)
     os.makedirs(addon_build_dir)
 
@@ -413,12 +483,12 @@ def do_build(
             ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
         )
 
-    # Write the Maya module file so dropping the folder into a Maya modules
-    # directory is enough — no manual PYTHONPATH/MAYA_PLUG_IN_PATH editing.
-    # The module version mirrors the plugin version (minus any -alpha suffix,
-    # which Maya's .mod parser does not accept) so admins can see which build
-    # is registered via Maya's module manager.
-    mod_path = os.path.join(addon_build_dir, "blenderkit.mod")
+    # Write the Maya module file as a SIBLING of the blenderkit/ folder so the
+    # module path resolves correctly once both are dropped into a Maya modules
+    # directory. The module version mirrors the plugin version (minus any
+    # -alpha suffix, which Maya's .mod parser does not accept) so admins can see
+    # which build is registered via Maya's module manager.
+    mod_path = os.path.join(stage_dir, "blenderkit.mod")
     mod_version = full_version.split("-")[0]
     mod_content = (
         f"+ blenderkit {mod_version} blenderkit\n"
@@ -434,16 +504,26 @@ def do_build(
         if os.path.isfile(top_level):
             shutil.copy(top_level, os.path.join(addon_build_dir, top_level))
 
-    # CREATE ZIP
+    # Hardcoded install instructions (top-level + inside the module folder).
+    write_install_text(stage_dir, full_version, channel)
+
+    # CREATE ZIP — name carries the version; contents are blenderkit.mod +
+    # blenderkit/ at the archive root (so unzip-into-modules just works).
+    zip_base = os.path.join(out_dir, f"blenderkit-maya-{full_version}")
     print("Creating ZIP archive.")
-    shutil.make_archive("out/blenderkit", "zip", "out", "blenderkit")
+    zip_path = shutil.make_archive(zip_base, "zip", stage_dir)
+    print(f"Wrote {zip_path}")
 
     if install_at is not None:
         for location in install_at:
-            target = os.path.join(location, "blenderkit")
-            print(f"Copying to {target}")
-            shutil.rmtree(target, ignore_errors=True)
-            shutil.copytree(addon_build_dir, target)
+            print(f"Installing into modules dir {location}")
+            os.makedirs(location, exist_ok=True)
+            # Replace the module folder.
+            target_folder = os.path.join(location, "blenderkit")
+            shutil.rmtree(target_folder, ignore_errors=True)
+            shutil.copytree(addon_build_dir, target_folder)
+            # Replace the .mod file.
+            shutil.copy2(mod_path, os.path.join(location, "blenderkit.mod"))
 
     if clean_dir is not None:
         print(f"Cleaning directory {clean_dir}")

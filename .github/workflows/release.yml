@@ -81,20 +81,21 @@ jobs:
       - name: Read built version
         id: version
         run: |
-          VERSION=$(python -c "import runpy; print(runpy.run_path('out/blenderkit/bk_maya/_build_version.py')['VERSION'])")
+          VERSION=$(python -c "import runpy; print(runpy.run_path('out/stage/blenderkit/bk_maya/_build_version.py')['VERSION'])")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Built version: $VERSION"
 
       - name: Name the artifact
         id: artifact
         run: |
+          BUILT="out/blenderkit-maya-${{ steps.version.outputs.version }}.zip"
           if [ "${{ steps.channel.outputs.channel }}" = "alpha" ]; then
             # Stable filename so the rolling alpha release always overwrites it.
             NAME="blenderkit-maya-alpha.zip"
           else
             NAME="blenderkit-maya-${{ steps.version.outputs.version }}.zip"
           fi
-          cp out/blenderkit.zip "$NAME"
+          cp "$BUILT" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       # ── ALPHA: one rolling prerelease, retagged to the latest main commit ──
