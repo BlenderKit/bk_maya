@@ -121,5 +121,4 @@ jobs:
         with:
           name: bk_maya-${{ github.event.pull_request.number || github.sha }}
           path: |
-            out
-            !out/blenderkit.zip
+            out/stage
