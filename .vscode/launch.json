@@ -74,10 +74,14 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "BLENDERKIT_DEBUG":"1"
+                "BLENDERKIT_DEBUG":"1",
+                "BLENDERKIT_DEV":"1"
             },
             "windows": {
                 "runtimeExecutable": "C:/Program Files/Autodesk/Maya2027/bin/maya.exe",
+            },
+            "osx": {
+                "runtimeExecutable": "/Applications/Autodesk/maya2027/Maya.app/Contents/bin/maya",
             },
         },
 
@@ -266,7 +270,7 @@
             "request": "launch",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}/dev.py",
+            "program": "${workspaceFolder}/bk_maya/dev.py",
             "args": [
                 "build",
             ],

@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import platform
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -165,6 +166,24 @@ def _resolution_key(max_res: str) -> str:
     return _RES_TOKEN.get(str(max_res), "")
 
 
+def _client_app_id() -> int:
+    try:
+        from . import client_lib
+
+        return client_lib.get_app_id()
+    except Exception:
+        return os.getpid()
+
+
+def _client_addon_version() -> str:
+    try:
+        from . import client_lib
+
+        return client_lib.ADDON_VERSION
+    except Exception:
+        return "0.0.0"
+
+
 class _DownloadController:
     """One-shot controller for a single asset download."""
 
@@ -192,30 +211,29 @@ class _DownloadController:
         exe = find_blender_executable()
         if not exe:
             msg = (
-                "Blender executable not found. Open Settings → Files and set "
-                "the path to blender.exe (Blender 5.0 or newer is required)."
+                "Blender executable not set. Open Settings → Files and choose "
+                "your Blender application (Blender 5.0 or newer is required), "
+                "then drag the asset again."
             )
             log.error("[BK download] %s", msg)
-            self._set_locator_state("idle")
-            self._notify_ui(msg)
+            self._cancel_action(msg)
             return False
 
         version = query_blender_version(exe)
         if version is None:
-            msg = f"Could not determine Blender version of {exe!r}. Check the path in Settings → Files."
+            msg = f"Could not determine Blender version of {exe!r}. Check the path in Settings → Files, then drag the asset again."
             log.error("[BK download] %s", msg)
-            self._set_locator_state("idle")
-            self._notify_ui(msg)
+            self._cancel_action(msg)
             return False
         if not version_meets_min(version):
             v = ".".join(str(x) for x in version)
             msg = (
                 f"Blender {v} is too old. BlenderKit for Maya requires Blender "
-                f"{MIN_BLENDER_MAJOR}.0 or newer. Update the path in Settings → Files."
+                f"{MIN_BLENDER_MAJOR}.0 or newer. Update the path in Settings → Files, "
+                "then drag the asset again."
             )
             log.error("[BK download] %s", msg)
-            self._set_locator_state("idle")
-            self._notify_ui(msg)
+            self._cancel_action(msg)
             return False
         log.info("[BK download] using Blender %s at %s", ".".join(str(x) for x in version), exe)
 
@@ -244,6 +262,19 @@ class _DownloadController:
         self.blend_path = os.path.join(self.work_dir, blend_name)
         self.out_usd = os.path.splitext(self.blend_path)[0] + ".usd"
 
+        # Networking (signed URL + file download) is delegated to the local Go
+        # client over loopback — direct HTTPS from headless Blender fails SSL
+        # verification on macOS.  Pass the client's base URL + identifiers so
+        # bg_download.py can call the blocking download wrappers.
+        client_base_url = ""
+        try:
+            from . import client_lib
+
+            client_lib.ensure_running()
+            client_base_url = client_lib.get_base_url()
+        except Exception as exc:
+            log.warning("[BK download] could not reach Go client: %s", exc)
+
         args = {
             "asset_data": self.asset,
             "max_resolution": prefs.max_resolution,
@@ -251,6 +282,10 @@ class _DownloadController:
             "out_usd": self.out_usd,
             "api_key": auth.get_api_key(),
             "work_dir": self.work_dir,
+            "client_base_url": client_base_url,
+            "app_id": _client_app_id(),
+            "addon_version": _client_addon_version(),
+            "platform_version": platform.platform(),
         }
         self.args_path = os.path.join(self.work_dir, "args.json")
         with open(self.args_path, "w", encoding="utf-8") as fh:
@@ -300,13 +335,25 @@ class _DownloadController:
         self._notify_ui(f"Download failed: {msg}")
 
     @staticmethod
-    def _notify_ui(message: str) -> None:
+    def _notify_ui(message: str, settings_tab: str | None = None) -> None:
         try:
             from ..ui.asset_bar import notify_error
 
-            notify_error(message)
+            notify_error(message, settings_tab=settings_tab)
         except Exception:
             pass
+
+    def _cancel_action(self, message: str) -> None:
+        """Abort this drop cleanly: remove the placement gizmo, drop the job,
+        and surface *message* with a shortcut to the Blender path setting.
+
+        Used when the Blender executable is missing/invalid so the viewport
+        isn't left with a stuck "downloading" gizmo.
+        """
+        self._set_locator_state("idle")
+        self._delete_locator()
+        self._cleanup()
+        self._notify_ui(message, settings_tab="Files")
 
     def _on_finished(self, out_path: str) -> None:
         log.info("[BK download] usd ready: %s", out_path)

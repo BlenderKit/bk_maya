@@ -1189,7 +1189,18 @@ class DragSession(QObject):  # type: ignore
         last_px = getattr(self, "_last_cursor_px", None)
         cur_px = (local.x(), local.y(), inside)
         if inside and cur_px != last_px:
-            has_hit, loc, normal, on_floor = _raycast_scene(local.x(), local.y())
+            # Qt reports cursor coords in logical pixels, but M3dView's
+            # viewToWorld()/portHeight() operate in physical/device pixels.
+            # On Retina/HiDPI displays (devicePixelRatio > 1, common on macOS)
+            # the two differ, so the placement helper would otherwise drift
+            # away from the cursor.  Scale logical → device pixels here.
+            try:
+                dpr = vp.devicePixelRatioF()
+            except Exception:
+                dpr = 1.0
+            has_hit, loc, normal, on_floor = _raycast_scene(
+                round(local.x() * dpr), round(local.y() * dpr)
+            )
             if (
                 loc != _active_state.location
                 or has_hit != _active_state.has_hit

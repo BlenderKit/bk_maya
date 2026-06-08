@@ -13,6 +13,8 @@ client_builds
 
 # generated vendor directory (populated by `python dev.py vendor` or `python dev.py build`)
 bk_maya/lib/
+# guard against an accidental nested copy if dev.py is ever run from the wrong cwd
+**/bk_maya/bk_maya/
 
 # generated version stamp (written into builds by `python dev.py build`)
 bk_maya/_build_version.py

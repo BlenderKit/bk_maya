@@ -67,6 +67,7 @@ def search(
     page_size: int = 24,
     page_offset: int = 0,  # unused (kept for callers' compatibility)
     free_only: bool = False,
+    my_assets_only: bool = False,
     quality_limit: int = 0,
     license_filter: str = "ANY",
     animated_only: bool = False,
@@ -128,6 +129,14 @@ def search(
         extra["modifiers"] = "nodes"
     if extra_filters:
         extra.update(extra_filters)
+
+    # "My assets only" constrains results to the logged-in user's author_id.
+    # An explicit author_id (e.g. from "Search by author") always takes
+    # precedence, mirroring the Blender addon's behaviour.
+    if my_assets_only and "author_id" not in extra:
+        uid = auth.get_user_id()
+        if uid:
+            extra["author_id"] = uid
 
     urlquery = api.build_search_url(
         query=query,

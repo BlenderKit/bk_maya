@@ -18,7 +18,15 @@ import maya.api.OpenMaya as om2
 # Make the addon root (parent of bk_maya/) importable *now* — Maya imports this
 # plug-in module before initializePlugin() runs its own sys.path setup, and we
 # want the centralised version available at import time for the menu/About text.
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))  # .../bk_maya/plugins
+# Maya may execute this module without defining __file__, so resolve it via the
+# call stack as a fallback.
+try:
+    _THIS_FILE = __file__
+except NameError:
+    import inspect
+
+    _THIS_FILE = inspect.getfile(inspect.currentframe())
+_THIS_DIR = os.path.dirname(os.path.abspath(_THIS_FILE))  # .../bk_maya/plugins
 _BK_DIR = os.path.dirname(_THIS_DIR)  # .../bk_maya
 _ADDON_ROOT = os.path.dirname(_BK_DIR)  # addon root
 if _ADDON_ROOT not in sys.path:

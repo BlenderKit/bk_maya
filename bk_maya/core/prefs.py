@@ -81,6 +81,9 @@ class _Prefs:
     search_free_only: bool = False
     """Return only free assets."""
 
+    search_my_assets_only: bool = False
+    """Return only assets uploaded by the logged-in user."""
+
     search_quality_limit: int = 0
     """Minimum quality rating (0 = no limit, 1-5 scale)."""
 

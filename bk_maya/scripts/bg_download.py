@@ -111,6 +111,16 @@ def pick_download_url(asset_data: dict, max_resolution: str) -> tuple[str, str]:
 # auth (CDN/S3 reject any Authorization header that wasn't in the signature).
 _BK_API_HOSTS = {"blenderkit.com", "www.blenderkit.com"}
 
+# Maya max_resolution pref → BlenderKit fileType / Go client resolution token.
+_RES_TO_RESOLUTION = {
+    "512": "resolution_0_5K",
+    "1024": "resolution_1K",
+    "2048": "resolution_2K",
+    "4096": "resolution_4K",
+    "8192": "resolution_8K",
+    "ORIGINAL": "ORIGINAL",
+}
+
 
 def _is_bk_api_url(url: str) -> bool:
     try:
@@ -118,6 +128,93 @@ def _is_bk_api_url(url: str) -> bool:
     except Exception:
         return False
     return host in _BK_API_HOSTS
+
+
+def _client_post(base_url: str, path: str, payload: dict, *, timeout: int = 120) -> str:
+    """POST *payload* as JSON to the local BlenderKit Go client over loopback.
+
+    The Go client performs the real external HTTPS request on our behalf, so
+    Blender's Python never opens a TLS connection (its bundled SSL has no CA
+    bundle on macOS, which is why direct urllib downloads fail with
+    ``CERTIFICATE_VERIFY_FAILED``).  Loopback HTTP needs no certificates.
+    """
+    full = base_url.rstrip("/") + path
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        full,
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def resolve_signed_url_via_client(
+    base_url: str,
+    asset_data: dict,
+    max_resolution: str,
+    *,
+    api_key: str,
+    app_id: int,
+    addon_version: str,
+    platform_version: str,
+    scene_uuid: str,
+) -> str:
+    """Resolve a signed CDN URL through the Go client's blocking wrapper.
+
+    Mirrors the Blender addon: the client selects the best file for the
+    requested resolution and exchanges the API ``downloadUrl`` for a signed
+    CDN URL, all over a single loopback call.
+    """
+    resolution = _RES_TO_RESOLUTION.get(str(max_resolution), "ORIGINAL")
+    payload = {
+        "addon_version": addon_version,
+        "platform_version": platform_version,
+        "app_id": app_id,
+        "resolution": resolution,
+        "asset_data": {
+            "name": str(asset_data.get("name") or asset_data.get("displayName") or ""),
+            "id": str(asset_data.get("id") or asset_data.get("assetBaseId") or ""),
+            "files": asset_data.get("files") or [],
+            "assetType": str(asset_data.get("assetType") or "model"),
+            "resolution": resolution,
+        },
+        "PREFS": {
+            "api_key": api_key,
+            "scene_id": scene_uuid,
+            "app_id": app_id,
+            "resolution": resolution,
+        },
+    }
+    log_line(f"resolve_signed_url_via_client: resolution={resolution}")
+    raw = _client_post(base_url, "/wrappers/get_download_url", payload, timeout=60)
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"get_download_url response was not JSON: {raw[:200]!r}") from exc
+    if not body.get("can_download", False):
+        raise RuntimeError(f"Server reports asset is not downloadable: {body}")
+    signed = body.get("download_url") or ""
+    if not signed:
+        raise RuntimeError(f"Client did not return a download_url: {body}")
+    log_line(f"resolve_signed_url_via_client: signed={signed[:120]}…")
+    return signed
+
+
+def download_file_via_client(base_url: str, url: str, dest_path: str, *, app_id: int) -> None:
+    """Download *url* to *dest_path* via the Go client's blocking wrapper.
+
+    The signed CDN URL carries its own auth token, so we pass an empty API key
+    (the client then sends no ``Authorization`` header, matching its own
+    ``downloadAsset`` path).
+    """
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    status("Downloading")
+    payload = {"app_id": app_id, "api_key": "", "url": url, "filepath": dest_path}
+    log_line(f"download_file_via_client: GET {url[:160]}… → {dest_path}")
+    _client_post(base_url, "/wrappers/blocking_file_download", payload, timeout=900)
+    progress(0.70, "Downloaded")
 
 
 def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
@@ -335,6 +432,13 @@ def main() -> int:
     # .blend instead of triggering a re-download.
     blend_path = args.get("blend_path") or ""
 
+    # Networking goes through the local BlenderKit Go client over loopback;
+    # direct HTTPS from Blender fails SSL verification on macOS.
+    client_base_url = args.get("client_base_url") or ""
+    app_id = int(args.get("app_id") or 0)
+    addon_version = args.get("addon_version") or "0.0.0"
+    platform_version = args.get("platform_version") or ""
+
     progress(0.0, "starting")
 
     if blend_path and os.path.isfile(blend_path) and os.path.getsize(blend_path) > 0:
@@ -342,38 +446,60 @@ def main() -> int:
         log_line(f"reusing cached blend: {blend_path}")
         progress(0.70, "Using cached .blend")
     else:
-        try:
-            url, ft = pick_download_url(asset_data, max_resolution)
-            status(f"picked {ft}")
-            log_line(f"picked file type={ft} url={url}")
-        except Exception as exc:
-            error(str(exc))
-            return 1
-
-        # The URL from search results points at /api/v1/download/<id>/ â€” we need
-        # to exchange it for a signed CDN URL before fetching the bytes.
         scene_uuid = asset_data.get("sceneUuid") or asset_data.get("scene_uuid") or str(uuid.uuid4())
-        try:
-            signed_url = resolve_signed_url(url, api_key=api_key, scene_uuid=scene_uuid)
-        except urllib.error.HTTPError as exc:
-            error(f"HTTP {exc.code} while requesting signed URL: {exc.reason}")
-            return 1
-        except Exception as exc:
-            error(f"signed URL request failed: {exc}")
-            traceback.print_exc(file=sys.stdout)
-            return 1
-
         if not blend_path:
             blend_path = os.path.join(work_dir, f"_bk_dl_{asset_data.get('id', 'asset')}.blend")
-        try:
-            download_file(signed_url, blend_path, api_key=api_key)
-        except urllib.error.HTTPError as exc:
-            error(f"HTTP {exc.code} while downloading: {exc.reason}")
-            return 1
-        except Exception as exc:
-            error(f"download failed: {exc}")
-            traceback.print_exc(file=sys.stdout)
-            return 1
+
+        if client_base_url:
+            # Preferred path: resolve + download through the Go client.
+            try:
+                signed_url = resolve_signed_url_via_client(
+                    client_base_url,
+                    asset_data,
+                    max_resolution,
+                    api_key=api_key,
+                    app_id=app_id,
+                    addon_version=addon_version,
+                    platform_version=platform_version,
+                    scene_uuid=scene_uuid,
+                )
+            except Exception as exc:
+                error(f"signed URL request failed: {exc}")
+                traceback.print_exc(file=sys.stdout)
+                return 1
+            try:
+                download_file_via_client(client_base_url, signed_url, blend_path, app_id=app_id)
+            except Exception as exc:
+                error(f"download failed: {exc}")
+                traceback.print_exc(file=sys.stdout)
+                return 1
+        else:
+            # Legacy fallback (no client URL supplied): direct HTTPS.
+            try:
+                url, ft = pick_download_url(asset_data, max_resolution)
+                status(f"picked {ft}")
+                log_line(f"picked file type={ft} url={url}")
+            except Exception as exc:
+                error(str(exc))
+                return 1
+            try:
+                signed_url = resolve_signed_url(url, api_key=api_key, scene_uuid=scene_uuid)
+            except urllib.error.HTTPError as exc:
+                error(f"HTTP {exc.code} while requesting signed URL: {exc.reason}")
+                return 1
+            except Exception as exc:
+                error(f"signed URL request failed: {exc}")
+                traceback.print_exc(file=sys.stdout)
+                return 1
+            try:
+                download_file(signed_url, blend_path, api_key=api_key)
+            except urllib.error.HTTPError as exc:
+                error(f"HTTP {exc.code} while downloading: {exc.reason}")
+                return 1
+            except Exception as exc:
+                error(f"download failed: {exc}")
+                traceback.print_exc(file=sys.stdout)
+                return 1
 
     try:
         if os.path.isfile(out_usd) and os.path.getsize(out_usd) > 0:
