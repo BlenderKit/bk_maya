@@ -22,6 +22,7 @@ import math
 import os
 import platform
 import re
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -194,12 +195,25 @@ class _DownloadController:
         rotation_y: float,
         locator_name: str = "",
         surface_normal: Sequence[float] = (0.0, 1.0, 0.0),
+        target_mesh: str = "",
     ) -> None:
         self.asset = asset
         self.location = tuple(location)
         self.rotation_y = float(rotation_y)
         self.surface_normal = tuple(surface_normal)
         self.locator_name = locator_name
+        # Material assets are assigned to ``target_mesh`` instead of being
+        # placed as new geometry. ``is_material`` switches the import path.
+        self.target_mesh = target_mesh
+        self.is_material = str(asset.get("assetType") or "").lower() == "material"
+        # HDRI assets become a world-level environment / dome light. They
+        # download a single .exr/.hdr image (no Blender, no USD) and are
+        # wired into a dome light instead of imported as geometry.
+        self.is_hdri = str(asset.get("assetType") or "").lower() in ("hdr", "hdri")
+        # Fallback HUD label state for material drops, which have no locator
+        # node to carry the progress text.
+        self._hud_name = ""
+        self._hud_status = ""
         self.job = BlenderJob()
         self.work_dir = ""
         self.args_path = ""
@@ -208,6 +222,11 @@ class _DownloadController:
 
     # ------------------------------------------------------------------
     def start(self) -> bool:
+        # HDRIs skip Blender entirely: download the image via the Go client
+        # over loopback and build a dome light from it.
+        if self.is_hdri:
+            return self._start_hdri()
+
         exe = find_blender_executable()
         if not exe:
             msg = (
@@ -375,12 +394,18 @@ class _DownloadController:
 
         def _do_import() -> None:
             try:
-                self._import_usd(out_path)
+                if self.is_material:
+                    self._assign_material_usd(out_path)
+                else:
+                    self._import_usd(out_path)
                 self._set_locator_state("done")
                 self._delete_locator()
             except Exception as exc:
                 log.exception("[BK download] import failed: %s", exc)
                 self._set_locator_state("idle")
+                if self.is_material:
+                    self._delete_locator()
+                    self._notify_ui(f"Material assign failed: {exc}")
             finally:
                 self._cleanup()
 
@@ -418,23 +443,34 @@ class _DownloadController:
             log.debug("setAttr downloadProgress failed: %s", exc)
 
     def _set_locator_label(self, name: str | None = None, status: str | None = None) -> None:
-        if not self.locator_name:
-            return
-        try:
-            from . import locator_state
+        if self.locator_name:
+            try:
+                from . import locator_state
 
-            locator_state.set_label(self.locator_name, name=name, status=status)
-        except Exception as exc:
-            log.debug("set_label failed: %s", exc)
+                locator_state.set_label(self.locator_name, name=name, status=status)
+            except Exception as exc:
+                log.debug("set_label failed: %s", exc)
 
         # Mirror the label to Maya's viewport HUD so the user always sees the
         # current step, even when the MPxDrawOverride text path is suppressed
-        # (off-screen, font fallback failed, draw override unloaded, etc.).
+        # (off-screen, font fallback failed, draw override unloaded, etc.) or
+        # when there is no locator at all (material drops).
         if cmds is None:
             return
-        entry = locator_state.get_label(self.locator_name)
-        nm = entry.get("name") or ""
-        st = entry.get("status") or ""
+        if self.locator_name:
+            from . import locator_state
+
+            entry = locator_state.get_label(self.locator_name)
+            nm = entry.get("name") or ""
+            st = entry.get("status") or ""
+        else:
+            # No locator (material): track the latest name/status ourselves.
+            if name is not None:
+                self._hud_name = name
+            if status is not None:
+                self._hud_status = status
+            nm = self._hud_name
+            st = self._hud_status
         if not (nm or st):
             return
         msg = f"<hl>{nm}</hl><br>{st}" if nm and st else (nm or st)
@@ -565,6 +601,301 @@ class _DownloadController:
         cmds.xform(grp, worldSpace=True, pivots=(x, y, z))
         cmds.xform(grp, worldSpace=True, rotation=(rx, ry, rz))
 
+    def _assign_material_usd(self, usd_path: str) -> None:
+        """Import a material-only USD and assign it to the target mesh.
+
+        Material assets export to USD as a small preview mesh carrying the
+        material. We import that, lift the resulting ``shadingEngine`` off the
+        preview geometry, assign it to the mesh the user dropped onto, then
+        delete the throw-away preview geometry. The shading network survives
+        because it stays connected to the target mesh's shading group.
+        """
+        if not cmds:
+            return
+        if not os.path.isfile(usd_path):
+            raise FileNotFoundError(usd_path)
+
+        target = self.target_mesh
+        if not target or not cmds.objExists(target):
+            raise RuntimeError(f"target mesh no longer exists: {target!r}")
+
+        self._ensure_usd_plugin()
+
+        before = set(cmds.ls(assemblies=True) or [])
+        try:
+            cmds.mayaUSDImport(
+                file=usd_path,
+                readAnimData=False,
+                shadingMode=[("useRegistry", "UsdPreviewSurface")],
+                preferredMaterial="standardSurface",
+                importInstances=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"mayaUSDImport failed for material USD: {exc}") from exc
+
+        after = set(cmds.ls(assemblies=True) or [])
+        new_roots = list(after - before)
+        if not new_roots:
+            raise RuntimeError("material USD imported but produced no new nodes")
+
+        # Collect the shading group(s) assigned to the imported preview mesh,
+        # skipping Maya's default ones.
+        shapes = cmds.listRelatives(new_roots, allDescendents=True, type="mesh", fullPath=True) or []
+        default_sgs = {"initialShadingGroup", "initialParticleSE"}
+        shading_engines: list[str] = []
+        for shp in shapes:
+            for se in cmds.listConnections(shp, type="shadingEngine") or []:
+                if se not in default_sgs and se not in shading_engines:
+                    shading_engines.append(se)
+
+        if not shading_engines:
+            cmds.delete(new_roots)
+            raise RuntimeError("no material found in the imported USD")
+
+        se = shading_engines[0]
+        try:
+            cmds.sets(target, edit=True, forceElement=se)
+            log.info("[BK material] assigned %s → %s", se, target)
+        finally:
+            # Remove the preview geometry — the shading network stays alive
+            # because it is now wired to the target mesh.
+            try:
+                cmds.delete(new_roots)
+            except Exception as exc:
+                log.debug("could not delete material preview geometry: %s", exc)
+
+        # Select the mesh that just received the material for clear feedback.
+        try:
+            cmds.select(target, replace=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # HDRI → environment / dome light
+    # ------------------------------------------------------------------
+    def _start_hdri(self) -> bool:
+        """Download the HDRI image (via the Go client) and build a dome light.
+
+        HDRIs don't need Blender or USD — they're a single .exr/.hdr image
+        that becomes an Arnold sky-dome (environment) light. The blocking
+        download runs on a daemon thread; the dome light is created back on
+        Maya's main thread.
+        """
+        if cmds is None:
+            return False
+        asset_id = str(self.asset.get("id") or self.asset.get("assetBaseId") or "asset")
+        asset_name = str(self.asset.get("name") or self.asset.get("displayName") or "asset")
+        slug = _slugify(asset_name)
+        dir_slug = slug[:16] if len(slug) > 16 else slug
+        self.work_dir = os.path.join(prefs.global_dir_resolved(), "hdrs", f"{dir_slug}_{asset_id}")
+        try:
+            os.makedirs(self.work_dir, exist_ok=True)
+        except OSError as exc:
+            log.error("[BK hdri] could not create cache dir: %s", exc)
+            self._notify_ui(f"Could not create HDRI cache folder: {exc}")
+            self._cleanup()
+            return False
+
+        # Reuse a previously downloaded image if one is cached.
+        cached = self._find_cached_hdr()
+        if cached:
+            log.info("[BK hdri] using cached image: %s", cached)
+            self._set_locator_label(name=asset_name, status="Creating environment light…")
+            self._hdri_downloaded(cached)
+            return True
+
+        try:
+            from . import client_lib
+
+            client_lib.ensure_running()
+            base_url = client_lib.get_base_url()
+        except Exception as exc:
+            msg = f"Could not reach the BlenderKit client to download the HDRI: {exc}"
+            log.error("[BK hdri] %s", msg)
+            self._notify_ui(msg)
+            self._cleanup()
+            return False
+
+        self._set_locator_label(name=asset_name, status="Downloading HDRI…")
+        worker = threading.Thread(
+            target=self._hdri_worker,
+            args=(base_url, asset_name),
+            name="bk-hdri-download",
+            daemon=True,
+        )
+        worker.start()
+        return True
+
+    def _hdri_worker(self, base_url: str, asset_name: str) -> None:
+        """Resolve + download the HDRI on a daemon thread (loopback HTTP)."""
+        try:
+            import uuid as _uuid
+
+            from ..scripts.bg_download import (
+                download_file_via_client,
+                resolve_signed_url_via_client,
+            )
+
+            scene_uuid = str(
+                self.asset.get("sceneUuid") or self.asset.get("scene_uuid") or _uuid.uuid4()
+            )
+            signed = resolve_signed_url_via_client(
+                base_url,
+                self.asset,
+                prefs.max_resolution,
+                api_key=auth.get_api_key(),
+                app_id=_client_app_id(),
+                addon_version=_client_addon_version(),
+                platform_version=platform.platform(),
+                scene_uuid=scene_uuid,
+            )
+            ext = self._url_ext(signed) or ".exr"
+            res_key = _resolution_key(prefs.max_resolution)
+            slug = _slugify(asset_name)
+            fname = f"{slug}_{res_key}{ext}" if res_key else f"{slug}{ext}"
+            dest = os.path.join(self.work_dir, fname)
+            if not (os.path.isfile(dest) and os.path.getsize(dest) > 0):
+                download_file_via_client(base_url, signed, dest, app_id=_client_app_id())
+        except Exception as exc:
+            log.exception("[BK hdri] download failed: %s", exc)
+            err = str(exc)
+            self._main_thread(lambda: self._hdri_failed(err))
+            return
+        self._main_thread(lambda: self._hdri_downloaded(dest))
+
+    def _hdri_downloaded(self, hdr_path: str) -> None:
+        """Main-thread callback: build the dome light from the image."""
+        try:
+            self._set_locator_label(status="Creating environment light…")
+            self._create_dome_light(hdr_path)
+        except Exception as exc:
+            log.exception("[BK hdri] dome light creation failed: %s", exc)
+            self._notify_ui(f"HDRI setup failed: {exc}")
+        finally:
+            self._clear_hud()
+            self._cleanup()
+
+    def _hdri_failed(self, msg: str) -> None:
+        log.error("[BK hdri] %s", msg)
+        self._notify_ui(f"HDRI download failed: {msg}")
+        self._clear_hud()
+        self._cleanup()
+
+    def _find_cached_hdr(self) -> str:
+        """Return a cached .exr/.hdr in ``work_dir`` (newest first), or ''."""
+        import glob
+
+        found: list[str] = []
+        for pattern in ("*.exr", "*.hdr"):
+            found.extend(glob.glob(os.path.join(self.work_dir, pattern)))
+        found = [f for f in found if os.path.isfile(f) and os.path.getsize(f) > 0]
+        found.sort(key=os.path.getmtime, reverse=True)
+        return found[0] if found else ""
+
+    @staticmethod
+    def _url_ext(url: str) -> str:
+        """Best-effort image extension from a (signed) URL path."""
+        try:
+            import urllib.parse
+
+            path = urllib.parse.urlparse(url).path
+            ext = os.path.splitext(path)[1].lower()
+        except Exception:
+            return ""
+        if ext == ".hdri":
+            return ".hdr"
+        if ext in (".exr", ".hdr", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+            return ext
+        return ""
+
+    @staticmethod
+    def _main_thread(fn) -> None:
+        """Run *fn* on Maya's main thread (safe to call from a worker)."""
+        try:
+            import maya.utils  # type: ignore[import-not-found]
+
+            maya.utils.executeDeferred(fn)
+        except Exception:
+            fn()
+
+    @staticmethod
+    def _clear_hud() -> None:
+        if cmds is None:
+            return
+        try:
+            cmds.inViewMessage(clear="topCenter")
+        except Exception:
+            pass
+
+    def _create_dome_light(self, hdr_path: str) -> None:
+        """Create an Arnold sky-dome light driven by *hdr_path*."""
+        if cmds is None:
+            return
+        if not os.path.isfile(hdr_path):
+            raise FileNotFoundError(hdr_path)
+
+        self._ensure_arnold_plugin()
+
+        base = "BK_HDRI_" + re.sub(r"[^A-Za-z0-9_]", "_", self.asset.get("name", "hdri"))
+        # aiSkyDomeLight is a light shape; shadingNode parents it under a new
+        # transform and returns the shape node name.
+        dome_shape = cmds.shadingNode("aiSkyDomeLight", asLight=True, name=base + "Shape")
+        dome_tr = ""
+        parents = cmds.listRelatives(dome_shape, parent=True, fullPath=True) or []
+        if parents:
+            dome_tr = cmds.rename(parents[0], base)
+            # listRelatives shape path is now stale after the rename.
+            shapes = cmds.listRelatives(dome_tr, shapes=True, fullPath=True) or []
+            dome_shape = shapes[0] if shapes else dome_shape
+
+        file_node = cmds.shadingNode("file", asTexture=True, isColorManaged=True, name=base + "_tex")
+        cmds.setAttr(file_node + ".fileTextureName", hdr_path, type="string")
+        # .exr / .hdr are scene-linear; force Raw so no sRGB curve is applied.
+        try:
+            cmds.setAttr(file_node + ".ignoreColorSpaceFileRules", True)
+            cmds.setAttr(file_node + ".colorSpace", "Raw", type="string")
+        except Exception as exc:
+            log.debug("[BK hdri] colorSpace setup skipped: %s", exc)
+
+        cmds.connectAttr(file_node + ".outColor", dome_shape + ".color", force=True)
+
+        try:
+            cmds.select(dome_tr or dome_shape, replace=True)
+        except Exception:
+            pass
+        log.info("[BK hdri] created dome light %s ← %s", dome_tr or dome_shape, hdr_path)
+        try:
+            cmds.inViewMessage(
+                amg=f"Added environment light: <hl>{self.asset.get('name', 'HDRI')}</hl>",
+                pos="topCenter",
+                fade=True,
+                fadeStayTime=1800,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _ensure_arnold_plugin() -> None:
+        """Load Arnold (mtoa) — required for ``aiSkyDomeLight``."""
+        if cmds is None:
+            return
+        try:
+            if cmds.pluginInfo("mtoa", query=True, loaded=True):
+                return
+        except Exception:
+            pass
+        try:
+            cmds.loadPlugin("mtoa", quiet=True)
+            if cmds.pluginInfo("mtoa", query=True, loaded=True):
+                log.info("[BK hdri] loaded Arnold plugin (mtoa)")
+                return
+        except Exception as exc:
+            log.warning("[BK hdri] could not load mtoa: %s", exc)
+        raise RuntimeError(
+            "Arnold (mtoa) is required to create an HDRI environment light. "
+            "Enable it in Windows > Plug-in Manager, then drop the HDRI again."
+        )
+
     @staticmethod
     def _ensure_usd_plugin() -> None:
         """Load ``mayaUsdPlugin`` if it isn't already."""
@@ -607,17 +938,27 @@ def download_asset(
     rotation_y: float = 0.0,
     locator_name: str = "",
     surface_normal: Sequence[float] = (0.0, 1.0, 0.0),
+    target_mesh: str = "",
 ) -> None:
     """Kick off an asynchronous download for *asset*.
 
     The function returns immediately; progress and completion are reported
     on the placement locator (if *locator_name* is given) and on the log.
+    For material assets, *target_mesh* is the mesh the material is assigned
+    to once the download + conversion finishes.
     """
     if cmds is None:
         log.warning("download_asset called outside Maya — ignored.")
         return
 
-    ctrl = _DownloadController(asset, location, rotation_y, locator_name, surface_normal=surface_normal)
+    ctrl = _DownloadController(
+        asset,
+        location,
+        rotation_y,
+        locator_name,
+        surface_normal=surface_normal,
+        target_mesh=target_mesh,
+    )
     _active_jobs.append(ctrl)
     if not ctrl.start():  # noqa: SIM102
         # start() already logged + reset locator

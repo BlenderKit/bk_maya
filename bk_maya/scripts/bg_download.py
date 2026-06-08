@@ -374,6 +374,12 @@ def run_export_usd(args: dict, blend_path: str, out_usd: str) -> None:
         "blend_path": blend_path,
         "out_usd": out_usd,
         "max_resolution": args.get("max_resolution", ""),
+        # Material assets ship the material datablock with no mesh bound to it;
+        # export_usd.py needs these to attach the asset material to a preview
+        # mesh so it actually gets written into the USD.
+        "asset_type": str((args.get("asset_data") or {}).get("assetType") or "model"),
+        "asset_name": str((args.get("asset_data") or {}).get("name") or ""),
+        "asset_id": str((args.get("asset_data") or {}).get("id") or ""),
     }
     params_path = os.path.join(os.path.dirname(blend_path) or ".", "_export_usd_params.json")
     with open(params_path, "w", encoding="utf-8") as fh:

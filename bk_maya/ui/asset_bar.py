@@ -1542,10 +1542,60 @@ class _FiltersPanel(QWidget):
 
         root.addWidget(self._body)
         self._body.setVisible(False)
+        self._update_toggle_text(False)
+
+    def _active_filter_tokens(self) -> list[str]:
+        """Return short human-readable labels for every active filter."""
+        tokens: list[str] = []
+        if self._free_only.isChecked():
+            tokens.append("Free")
+        if self._my_assets.isChecked():
+            tokens.append("Mine")
+        if self._quality_check.isChecked() and self._quality_limit.value() > 0:
+            tokens.append(f"Quality≥{self._quality_limit.value()}")
+        lic = self._license.currentText()
+        if lic and lic != "Any":
+            tokens.append(lic)
+        if self._animated_only.isChecked():
+            tokens.append("Animated")
+        if self._tex_filter.isChecked():
+            tokens.append(f"Tex {self._tex_min.value()}–{self._tex_max.value()}px")
+        if self._poly_filter.isChecked():
+            tokens.append(f"Poly {self._poly_min.value()}–{self._poly_max.value()}K")
+        if self._fsize_filter.isChecked():
+            tokens.append(f"Size {self._fsize_min.value()}–{self._fsize_max.value()}MB")
+        if self._style.currentData() and self._style.currentData() != "ANY":
+            tokens.append(self._style.currentText())
+        if self._condition.currentData() and self._condition.currentData() != "UNSPECIFIED":
+            tokens.append(self._condition.currentText())
+        if self._dyear_filter.isChecked():
+            tokens.append(f"Year {self._dyear_min.value()}–{self._dyear_max.value()}")
+        if self._geo_nodes.isChecked():
+            tokens.append("Geo Nodes")
+        return tokens
+
+    def _update_toggle_text(self, checked: bool) -> None:
+        """Refresh the header label, summarising active filters when collapsed."""
+        arrow = "▼" if checked else "▶"
+        tokens = self._active_filter_tokens()
+        if not tokens:
+            self._toggle.setText(f"{arrow}  Filters")
+            self._toggle.setToolTip("")
+            return
+        if checked:
+            # Expanded: keep it short, just show the count.
+            self._toggle.setText(f"{arrow}  Filters  ({len(tokens)} active)")
+        else:
+            # Collapsed: show the active filters inline (truncated if long).
+            summary = " · ".join(tokens)
+            if len(summary) > 60:
+                summary = summary[:57].rstrip(" ·") + "…"
+            self._toggle.setText(f"{arrow}  Filters:  {summary}")
+        self._toggle.setToolTip("Active filters:\n• " + "\n• ".join(tokens))
 
     def _on_toggled(self, checked: bool) -> None:
-        self._toggle.setText(("▼" if checked else "▶") + "  Filters")
         self._body.setVisible(checked)
+        self._update_toggle_text(checked)
 
     def _schedule(self) -> None:
         prefs.search_free_only = self._free_only.isChecked()
@@ -1568,6 +1618,7 @@ class _FiltersPanel(QWidget):
         prefs.search_design_year_min = self._dyear_min.value()
         prefs.search_design_year_max = self._dyear_max.value()
         prefs.search_geometry_nodes = self._geo_nodes.isChecked()
+        self._update_toggle_text(self._toggle.isChecked())
         self._debounce.start()
 
     @staticmethod
