@@ -924,9 +924,7 @@ class _DragOverlay(QWidget):  # type: ignore
         if thumb_path and os.path.isfile(thumb_path):
             src = QPixmap(thumb_path)
             if not src.isNull():
-                self._pix = src.scaled(
-                    self._BADGE, self._BADGE, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+                self._pix = src.scaled(self._BADGE, self._BADGE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         side = self._BADGE + self._PAD * 2
         self.resize(side, side)
 
@@ -1392,9 +1390,7 @@ class DragSession(QObject):  # type: ignore
                 dpr = vp.devicePixelRatioF()
             except Exception:
                 dpr = 1.0
-            has_hit, loc, normal, on_floor, _hit_node = _raycast_scene(
-                round(local.x() * dpr), round(local.y() * dpr)
-            )
+            has_hit, loc, normal, on_floor, _hit_node = _raycast_scene(round(local.x() * dpr), round(local.y() * dpr))
             if (
                 loc != _active_state.location
                 or has_hit != _active_state.has_hit
@@ -1486,9 +1482,7 @@ class DragSession(QObject):  # type: ignore
             dpr = vp.devicePixelRatioF()
         except Exception:
             dpr = 1.0
-        _hit, loc, normal, on_floor, hit_node = _raycast_scene(
-            round(local.x() * dpr), round(local.y() * dpr)
-        )
+        _hit, loc, normal, on_floor, hit_node = _raycast_scene(round(local.x() * dpr), round(local.y() * dpr))
         # Only a real mesh hit (not the floor fallback) is a valid target.
         mesh_hit = bool(hit_node) and not on_floor
         target = hit_node if mesh_hit else ""

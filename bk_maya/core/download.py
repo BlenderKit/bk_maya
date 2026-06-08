@@ -736,9 +736,7 @@ class _DownloadController:
                 resolve_signed_url_via_client,
             )
 
-            scene_uuid = str(
-                self.asset.get("sceneUuid") or self.asset.get("scene_uuid") or _uuid.uuid4()
-            )
+            scene_uuid = str(self.asset.get("sceneUuid") or self.asset.get("scene_uuid") or _uuid.uuid4())
             signed = resolve_signed_url_via_client(
                 base_url,
                 self.asset,

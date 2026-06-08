@@ -579,9 +579,7 @@ class AssetTile(QFrame):
         if vs_pix and not vs_pix.isNull():
             self._vs_badge.setPixmap(vs_pix)
             self._vs_badge.move(self._thumb_sz - _BADGE_SIZE - 4, 4)
-            self._vs_badge.setToolTip(
-                (asset.get("verificationStatus") or "").replace("_", " ").title()
-            )
+            self._vs_badge.setToolTip((asset.get("verificationStatus") or "").replace("_", " ").title())
             self._vs_badge.show()
             self._vs_badge.raise_()
 

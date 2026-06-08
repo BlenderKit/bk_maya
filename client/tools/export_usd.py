@@ -920,7 +920,9 @@ def _prepare_material_asset(asset_name: str = "", asset_id: str = "") -> bool:
     return True
 
 
-def export_to_usd(blend_path: str, out_usd: str, asset_type: str = "model", asset_name: str = "", asset_id: str = "") -> None:
+def export_to_usd(
+    blend_path: str, out_usd: str, asset_type: str = "model", asset_name: str = "", asset_id: str = ""
+) -> None:
     """Export a .blend to .usd with the necessary pre-processing for Maya compatibility.
 
     Attributes:
