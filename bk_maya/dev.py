@@ -54,6 +54,13 @@ VENDOR_PACKAGES = [
     "requests",  # HTTP client used by core/ and api/
 ]
 
+# Absolute path to the vendored lib/ directory. Anchored to this file's location
+# (this script lives in the ``bk_maya/`` package dir) rather than the current
+# working directory, so vendoring always targets ``bk_maya/lib`` no matter where
+# the command is invoked from. A cwd-relative path here previously produced a
+# stray ``bk_maya/bk_maya/lib`` when run from inside the package folder.
+_LIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
+
 
 def vendor_packages(lib_dir: str, packages: list[str] = VENDOR_PACKAGES) -> None:
     """Download pure-Python wheels and extract them into *lib_dir*.
@@ -448,7 +455,7 @@ def do_build(
 
     # Refresh vendored pure-Python dependencies inside the source tree so the
     # in-place dev install and the packaged build see the same files.
-    vendor_packages(os.path.abspath(os.path.join("bk_maya", "lib")))
+    vendor_packages(_LIB_DIR)
 
     if client_binaries_path is None:
         blenderkit_client_build(addon_build_dir)
@@ -610,6 +617,6 @@ elif args.command == "release":
         version=args.version,
     )
 elif args.command == "vendor":
-    vendor_packages(os.path.abspath(os.path.join("bk_maya", "lib")))
+    vendor_packages(_LIB_DIR)
 else:
     parser.print_help()

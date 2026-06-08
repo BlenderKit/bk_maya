@@ -223,15 +223,24 @@ class _FilesTab(QWidget):
             self._dir_edit.setText(path)
 
     def _browse_blender(self) -> None:
+        current_dir = os.path.dirname(self._blender_edit.text())
         if os.name == "nt":
             filt = "Blender executable (blender.exe);;All files (*)"
+            start = current_dir or os.path.expanduser("~")
         elif sys.platform == "darwin":
-            filt = "Blender (Blender);;All files (*)"
+            # Blender ships as an application bundle on macOS. Allow picking the
+            # .app (resolved to the inner binary below) and default to /Applications.
+            filt = "Blender (*.app);;All files (*)"
+            start = current_dir or "/Applications"
         else:
             filt = "Blender executable (blender);;All files (*)"
-        start = os.path.dirname(self._blender_edit.text()) or os.path.expanduser("~")
+            start = current_dir or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(self, "Select Blender Executable", start, filt)
         if path:
+            if sys.platform == "darwin":
+                from ..core.blender_runner import resolve_macos_app
+
+                path = resolve_macos_app(path)
             self._blender_edit.setText(path)
             self._refresh_blender_status()
 

@@ -130,6 +130,16 @@ fi
 # --- Move to repository root ---
 cd "${REPO_DIR}"
 
+# --- Ensure git submodules are checked out (e.g. bk_maya/bk_proxor) ---
+# Without this the .prxc proxor parser silently fails to import and no
+# proxor hologram is drawn. Safe to run repeatedly; no-op once populated.
+if command -v git >/dev/null 2>&1 && [ -f "${REPO_DIR}/.gitmodules" ]; then
+  echo "Initializing/updating git submodules (recursive)..."
+  if ! git -C "${REPO_DIR}" submodule update --init --recursive; then
+    echo "Warning: 'git submodule update --init --recursive' failed; continuing..." >&2
+  fi
+fi
+
 PROJECT_NAME="bk_maya"
 PROJECT_DIR="${REPO_DIR}"
 REQUIREMENTS_FILE="${PROJECT_DIR}/pyproject.toml"

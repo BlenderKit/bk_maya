@@ -76,6 +76,18 @@ pdm self update
 
 cd /d %REPO_FOLDER%
 
+:: Ensure git submodules are checked out (e.g. bk_maya\bk_proxor).
+:: Without this the .prxc proxor parser silently fails to import and no
+:: proxor hologram is drawn. Safe to run repeatedly; no-op once populated.
+where git >nul 2>nul
+if not errorlevel 1 (
+    if exist "%REPO_FOLDER%\.gitmodules" (
+        echo "Initializing/updating git submodules (recursive)..."
+        git -C "%REPO_FOLDER%" submodule update --init --recursive
+        if errorlevel 1 echo "Warning: git submodule update failed; continuing..."
+    )
+)
+
 echo ----------------------------------------
 echo "Processing project: bk_maya"
 echo ----------------------------------------

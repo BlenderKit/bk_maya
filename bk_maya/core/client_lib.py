@@ -516,6 +516,16 @@ def oauth2_logout(refresh_token_str: str, api_key: str = "") -> None:
     _http_request("GET", f"{get_base_url()}/oauth2/logout", body=body)
 
 
+def get_user_profile(api_key: str = "") -> None:
+    """Ask the client to fetch the logged-in user's profile.
+
+    Mirrors the Blender addon: the client GETs ``/api/v1/me/`` and reports
+    the result back on ``/report`` as a ``profiles/get_user_profile`` task.
+    """
+    body = _minimal_report_data(api_key=api_key)
+    _http_request("GET", f"{get_base_url()}/profiles/get_user_profile", body=body)
+
+
 # ── Search ──────────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -806,6 +816,22 @@ def set_login_callback(cb: LoginCallback | None) -> None:
         _login_cb = cb
 
 
+ProfileCallback = Callable[[dict[str, Any], str, str], None]
+"""(result_dict, status, message) — status is 'finished' or 'error'."""
+
+_profile_lock = threading.Lock()
+_profile_cb: ProfileCallback | None = None
+
+
+def set_profile_callback(cb: ProfileCallback | None) -> None:
+    """Register the callback invoked when a ``profiles/get_user_profile`` task
+    is reported. Only one callback is active at a time — used by ``core.auth``.
+    """
+    global _profile_cb
+    with _profile_lock:
+        _profile_cb = cb
+
+
 def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
     """Route completed tasks to the appropriate registered callback.
 
@@ -879,3 +905,17 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 cb(result, status, message)
             except Exception:
                 log.exception("Login callback raised")
+
+        elif ttype == "profiles/get_user_profile":
+            if status not in ("finished", "error"):
+                continue
+            with _profile_lock:
+                pcb = _profile_cb
+            if pcb is None:
+                continue
+            result = task.get("result") or {}
+            message = task.get("message") or ""
+            try:
+                pcb(result, status, message)
+            except Exception:
+                log.exception("Profile callback raised")

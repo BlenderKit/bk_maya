@@ -208,7 +208,12 @@ def build_search_url(
         q_tokens.append(urllib.parse.quote_plus(query))
     q_tokens.append(f"asset_type:{asset_type}")
     q_tokens.append("sexualizedContent:")
-    q_tokens.append("verification_status:validated")
+    # When filtering by a specific author (e.g. "My assets only" or
+    # "Search by author"), don't restrict to validated assets — otherwise the
+    # user's own private/unvalidated uploads are hidden. Mirrors the
+    # asset-gallery behaviour for author_id queries.
+    if "author_id" not in filter_params:
+        q_tokens.append("verification_status:validated")
     q_tokens.append(f"order:{effective_order}")
     for k, v in filter_params.items():
         q_tokens.append(f"{k}:{urllib.parse.quote_plus(str(v))}")

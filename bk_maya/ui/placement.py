@@ -85,6 +85,12 @@ WHEEL_STEP = 15.0
 import ctypes
 from ctypes import wintypes
 
+# The WH_MOUSE_LL hook below is a Windows-only workaround. On macOS / Linux
+# the Qt event filter already sees every wheel / button event, so the hook
+# must never start there (``ctypes.WinDLL`` doesn't exist off Windows and
+# would crash the hook thread).
+_IS_WINDOWS = hasattr(ctypes, "WinDLL")
+
 _WH_MOUSE_LL = 14
 _WM_MOUSEWHEEL_LL = 0x020A
 _WM_LBUTTONUP_LL = 0x0202
@@ -169,6 +175,10 @@ def _install_low_level_hook() -> None:
     """
     global _hook_installed
     if _hook_installed:
+        return
+    # Windows-only: on macOS / Linux Qt's event filter handles wheel/button
+    # events directly, and ``ctypes.WinDLL`` isn't available, so skip entirely.
+    if not _IS_WINDOWS:
         return
     import threading
 
@@ -294,6 +304,18 @@ class _State:
     # world-space surface normal at the raycast hit; (0,1,0) when the
     # cursor is on the floor plane or no surface was struck.
     surface_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    # ── Material drop mode ─────────────────────────────────────────────
+    # Materials are dragged straight onto an existing mesh (no bounding-box
+    # helper). ``is_material`` switches the drag session into mesh-pick mode
+    # and ``target_mesh`` holds the DAG path of the mesh currently under the
+    # cursor (empty when the cursor is not over a mesh).
+    is_material: bool = False
+    target_mesh: str = ""
+    # ── HDRI drop mode ─────────────────────────────────────────────────
+    # HDRIs become an environment / dome light. They can be dropped anywhere
+    # in the viewport (no mesh target, no bounding-box helper) and only the
+    # cursor-following badge is shown during the drag.
+    is_hdri: bool = False
     # proxor line data (may be empty list)
     proxor_lines: list[list[tuple[float, float, float]]] = field(default_factory=list)
     # proxor hologram mesh (flat list of triangle vertices, 3 per tri,
@@ -303,6 +325,24 @@ class _State:
 
 # The active state — read by the draw override every frame.
 _active_state: _State = _State()
+
+
+def _is_material_asset(asset_data: dict[str, Any]) -> bool:
+    """Return True when *asset_data* is a BlenderKit material asset.
+
+    Material assets are applied directly to an existing mesh under the
+    cursor instead of being placed with a bounding-box helper.
+    """
+    return str(asset_data.get("assetType") or "").lower() == "material"
+
+
+def _is_hdri_asset(asset_data: dict[str, Any]) -> bool:
+    """Return True when *asset_data* is a BlenderKit HDRI asset.
+
+    HDRIs are dropped anywhere in the viewport and turned into an
+    environment / dome light instead of placed as geometry.
+    """
+    return str(asset_data.get("assetType") or "").lower() in ("hdr", "hdri")
 
 
 def get_drag_snapshot() -> dict[str, Any] | None:
@@ -393,13 +433,16 @@ def _get_viewport_widget() -> QWidget | None:
     return best
 
 
-def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
+def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool, str]:
     """Cast a ray from viewport pixel (vp_x, vp_y) (Qt coords).
 
-    Returns ``(has_hit, (x,y,z), (nx,ny,nz), hit_floor)``.  ``hit_floor``
-    is True when the Y=0 fallback plane was used because no scene geometry
-    was struck; the normal is then ``(0,1,0)``.  When no hit at all (ray
-    parallel to the floor) the normal is also ``(0,1,0)``.
+    Returns ``(has_hit, (x,y,z), (nx,ny,nz), hit_floor, hit_node)``.
+    ``hit_floor`` is True when the Y=0 fallback plane was used because no
+    scene geometry was struck; the normal is then ``(0,1,0)``.  When no hit
+    at all (ray parallel to the floor) the normal is also ``(0,1,0)``.
+    ``hit_node`` is the full DAG path of the mesh shape that was struck
+    (empty string for the floor fallback / no hit) — used by material
+    drag-drop to pick an assignment target.
     """
     floor_normal = (0.0, 1.0, 0.0)
     try:
@@ -425,6 +468,7 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
         closest_dist = float("inf")
         best_hit: tuple | None = None
         best_normal: tuple | None = None
+        best_node: str = ""
 
         it = om2.MItDag(om2.MItDag.kDepthFirst, om2.MFn.kMesh)
         while not it.isDone():
@@ -452,6 +496,10 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
                     if 0.001 < d < closest_dist:
                         closest_dist = d
                         best_hit = (float(hit_pt.x), float(hit_pt.y), float(hit_pt.z))
+                        try:
+                            best_node = dag_path.fullPathName()
+                        except Exception:
+                            best_node = ""
                         nrm = None
                         if hit_face >= 0:
                             try:
@@ -480,7 +528,7 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
             it.next()
 
         if best_hit:
-            return True, best_hit, (best_normal or floor_normal), False
+            return True, best_hit, (best_normal or floor_normal), False, best_node
 
         # Floor plane fallback
         ox, oy, oz = near_pt.x, near_pt.y, near_pt.z
@@ -493,18 +541,18 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool]:
                 # Floor counts as a HIT so the bbox snaps to it (cyan in the
                 # draw override).  Returning has_hit=False would leave the
                 # bbox at world origin which is never what the user wants.
-                return True, (ox + t * dx, 0.0, oz + t * dz), floor_normal, True
+                return True, (ox + t * dx, 0.0, oz + t * dz), floor_normal, True, ""
 
         # No hit and the ray is parallel to the floor — project the camera
         # eye-line forward by an arbitrary distance so the bbox is still
         # visible at the cursor depth instead of snapping back to origin.
         t = 1000.0  # 10 m in Maya cm units; comfortably within view
-        return False, (ox + t * dx, oy + t * dy, oz + t * dz), floor_normal, False
+        return False, (ox + t * dx, oy + t * dy, oz + t * dz), floor_normal, False, ""
 
     except Exception as exc:
         log.debug("Raycast error: %s", exc)
 
-    return False, (0.0, 0.0, 0.0), floor_normal, False
+    return False, (0.0, 0.0, 0.0), floor_normal, False, ""
 
 
 def _refresh_viewport(*, light: bool = False) -> None:
@@ -843,6 +891,74 @@ def _make_cursor(thumb_path: str) -> QCursor:
     return QCursor(pix, 0, 0)
 
 
+class _DragOverlay(QWidget):  # type: ignore
+    """Frameless, click-through badge that follows the cursor during a drag.
+
+    Maya's 3D viewport is a native GL surface, and on macOS the Qt override
+    cursor isn't reliably painted over it — so material drags (which have no
+    3D locator) had no visible "you are dragging" indicator. This is an
+    independent always-on-top window we reposition on every cursor poll. Its
+    accent colour also signals whether the mesh under the cursor is a valid
+    drop target (green) or not (neutral).
+    """
+
+    _BADGE = 64  # px — thumbnail box
+    _PAD = 6  # px — card padding / border room
+
+    def __init__(self, thumb_path: str = "") -> None:
+        super().__init__(None)
+        flags = Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        no_focus = getattr(Qt, "WindowDoesNotAcceptFocus", None)
+        if no_focus is not None:
+            flags |= no_focus
+        transparent = getattr(Qt, "WindowTransparentForInput", None)
+        if transparent is not None:
+            flags |= transparent
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._valid = False
+        self._pix = QPixmap()
+        if thumb_path and os.path.isfile(thumb_path):
+            src = QPixmap(thumb_path)
+            if not src.isNull():
+                self._pix = src.scaled(self._BADGE, self._BADGE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        side = self._BADGE + self._PAD * 2
+        self.resize(side, side)
+
+    def set_valid(self, valid: bool) -> None:
+        if valid != self._valid:
+            self._valid = valid
+            self.update()
+
+    def move_to(self, gp) -> None:
+        # Sit just below-right of the cursor tip so it never hides the hit point.
+        self.move(int(gp.x()) + 16, int(gp.y()) + 16)
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            rect = self.rect().adjusted(1, 1, -1, -1)
+            accent = QColor(0, 220, 120, 235) if self._valid else QColor(235, 235, 235, 205)
+            p.setBrush(QColor(25, 25, 25, 185))
+            p.setPen(QPen(accent, 2))
+            p.drawRoundedRect(rect, 10, 10)
+            if not self._pix.isNull():
+                x = (self.width() - self._pix.width()) // 2
+                y = (self.height() - self._pix.height()) // 2
+                p.drawPixmap(x, y, self._pix)
+            else:
+                # Fallback crosshair when no thumbnail is available.
+                m = self.width() // 2
+                p.drawLine(m, self._PAD + 4, m, self.height() - self._PAD - 4)
+                p.drawLine(self._PAD + 4, m, self.width() - self._PAD - 4, m)
+        finally:
+            p.end()
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Drag session (singleton Qt event filter)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -865,6 +981,12 @@ class DragSession(QObject):  # type: ignore
         self._locator_name: str | None = None
         self._download_started = False
         self._poll_timer: QTimer | None = None  # polls cursor position
+        # Material-drag highlight bookkeeping (the mesh under the cursor is
+        # selected so the user sees what will receive the material).
+        self._orig_selection: list[str] = []
+        self._hilited_mesh: str = ""
+        # Cursor-following badge shown during material drags.
+        self._overlay: _DragOverlay | None = None
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -875,6 +997,28 @@ class DragSession(QObject):  # type: ignore
             return
         self._delay_locator = delay_locator
         self._drop_fired = False
+        # Materials are applied to an existing mesh under the cursor — no
+        # bounding-box helper / proxor wireframe is shown for them.
+        is_material = _is_material_asset(asset_data)
+        is_hdri = _is_hdri_asset(asset_data)
+        if is_material:
+            # Never spawn or lazily create the placement locator in material
+            # mode; the cursor-thumbnail + mesh highlight is the only UI.
+            self._delay_locator = False
+            # Remember the current selection so the hover-highlight can be
+            # restored when the drag ends / is cancelled.
+            self._orig_selection = []
+            self._hilited_mesh = ""
+            try:
+                import maya.cmds as cmds
+
+                self._orig_selection = cmds.ls(selection=True, long=True) or []
+            except Exception:
+                self._orig_selection = []
+        elif is_hdri:
+            # HDRIs are world-level environment lights — no locator, no mesh
+            # target. Only the cursor-following badge is shown.
+            self._delay_locator = False
         # BlenderKit API returns bbox in meters; Maya internal unit is cm.
         scale = _meters_to_internal()
 
@@ -938,6 +1082,8 @@ class DragSession(QObject):  # type: ignore
             location=(0.0, 0.0, 0.0),
             rotation_y=0.0,
             active=True,
+            is_material=is_material,
+            is_hdri=is_hdri,
             proxor_lines=_prxc.get("lines", []),
             proxor_mesh=_prxc.get("mesh", []),
         )
@@ -948,22 +1094,44 @@ class DragSession(QObject):  # type: ignore
             bbox_max,
         )
 
-        # Spawn the locator (draw override starts ticking)
-        self._locator_name = None if delay_locator else _create_locator()
-        if self._locator_name is None:
-            log.warning("bkPlacementLocator node type not registered - load the BlenderKit plugin via Plug-in Manager.")
+        # Spawn the locator (draw override starts ticking).  Material and HDRI
+        # drops never use a locator — materials highlight an existing mesh and
+        # HDRIs become a world-level environment light.
+        if is_material or is_hdri:
+            self._locator_name = None
         else:
-            self._publish_bbox_to_locator()
-            self._publish_proxor_to_locator()
+            self._locator_name = None if delay_locator else _create_locator()
+            if self._locator_name is None and not delay_locator:
+                log.warning(
+                    "bkPlacementLocator node type not registered - load the BlenderKit plugin via Plug-in Manager."
+                )
+            elif self._locator_name is not None:
+                self._publish_bbox_to_locator()
+                self._publish_proxor_to_locator()
 
-        # If the .prxc wasn't on disk yet, ask the local client to fetch
-        # it now; when it lands the registry callback swaps the bbox out
-        # for the wireframe mid-drag (Blender-style).
-        if not _active_state.proxor_lines and not _active_state.proxor_mesh:
-            self._start_proxor_fetch(asset_data)
+            # If the .prxc wasn't on disk yet, ask the local client to fetch
+            # it now; when it lands the registry callback swaps the bbox out
+            # for the wireframe mid-drag (Blender-style).
+            if not _active_state.proxor_lines and not _active_state.proxor_mesh:
+                self._start_proxor_fetch(asset_data)
 
         # Override cursor with thumbnail
         QApplication.setOverrideCursor(_make_cursor(thumb_path))
+
+        # Material drags have no 3D locator and the override cursor above
+        # isn't painted over Maya's native GL viewport on macOS, so spawn an
+        # independent cursor-following badge as the "you are dragging" cue.
+        # HDRIs use the same badge (they have no locator either).
+        self._overlay = None
+        if is_material or is_hdri:
+            try:
+                self._overlay = _DragOverlay(thumb_path)
+                self._overlay.move_to(QCursor.pos())
+                self._overlay.show()
+                self._overlay.raise_()
+            except Exception as exc:
+                log.debug("Could not create drag overlay: %s", exc)
+                self._overlay = None
 
         # Find viewport for mouse mapping
         self._vp_widget = _get_viewport_widget()
@@ -1053,13 +1221,27 @@ class DragSession(QObject):  # type: ignore
         try:
             import maya.cmds as cmds
 
-            cmds.inViewMessage(
-                amg=(
+            if is_material:
+                hint = (
+                    f"<b>{asset_data.get('name', 'Material')}</b>  "
+                    "&nbsp;|&nbsp;  Drop on a mesh to assign  "
+                    "&nbsp;|&nbsp;  RMB / ESC: cancel"
+                )
+            elif is_hdri:
+                hint = (
+                    f"<b>{asset_data.get('name', 'HDRI')}</b>  "
+                    "&nbsp;|&nbsp;  Drop anywhere to add as environment light  "
+                    "&nbsp;|&nbsp;  RMB / ESC: cancel"
+                )
+            else:
+                hint = (
                     f"<b>{asset_data.get('name', 'Asset')}</b>  "
                     "&nbsp;|&nbsp;  Wheel: rotate  "
                     "&nbsp;|&nbsp;  LMB: place  "
                     "&nbsp;|&nbsp;  RMB / ESC: cancel"
-                ),
+                )
+            cmds.inViewMessage(
+                amg=hint,
                 pos="botCenter",
                 fade=False,
             )
@@ -1139,6 +1321,16 @@ class DragSession(QObject):  # type: ignore
             self._on_drop()
             return
 
+        # ── Material mode: highlight the mesh under the cursor ────────────
+        if _active_state.is_material:
+            self._poll_material()
+            return
+
+        # ── HDRI mode: just keep the cursor badge following the pointer ───
+        if _active_state.is_hdri:
+            self._poll_hdri()
+            return
+
         # ── 2. Consume wheel notches from the LL hook ─────────────────────
         # _wheel_accum is updated on the hook thread; one drain per tick.
         # 1 notch = 120 raw units.
@@ -1189,7 +1381,16 @@ class DragSession(QObject):  # type: ignore
         last_px = getattr(self, "_last_cursor_px", None)
         cur_px = (local.x(), local.y(), inside)
         if inside and cur_px != last_px:
-            has_hit, loc, normal, on_floor = _raycast_scene(local.x(), local.y())
+            # Qt reports cursor coords in logical pixels, but M3dView's
+            # viewToWorld()/portHeight() operate in physical/device pixels.
+            # On Retina/HiDPI displays (devicePixelRatio > 1, common on macOS)
+            # the two differ, so the placement helper would otherwise drift
+            # away from the cursor.  Scale logical → device pixels here.
+            try:
+                dpr = vp.devicePixelRatioF()
+            except Exception:
+                dpr = 1.0
+            has_hit, loc, normal, on_floor, _hit_node = _raycast_scene(round(local.x() * dpr), round(local.y() * dpr))
             if (
                 loc != _active_state.location
                 or has_hit != _active_state.has_hit
@@ -1232,6 +1433,155 @@ class DragSession(QObject):  # type: ignore
         # repainting (which is what cmds.refresh(force=True) does and what
         # was previously starving the polling timer).
         _refresh_viewport(light=True)
+
+    def _poll_material(self) -> None:
+        """Cursor poll for material drops — pick the mesh under the cursor.
+
+        Materials have no bounding-box helper; instead we raycast each tick
+        and remember the mesh under the cursor as the assignment target.
+        Only real geometry counts (the Y=0 floor fallback is ignored), so a
+        material can only be dropped directly onto a mesh.
+        """
+        vp = self._vp_widget or _get_viewport_widget()
+        if vp is None:
+            return
+        if vp is not self._vp_widget:
+            self._vp_widget = vp
+
+        try:
+            gp = QCursor.pos()
+        except Exception:
+            log.exception("Could not get global cursor position; stopping drag")
+            return
+        # Keep the cursor badge glued to the pointer, even outside the viewport.
+        if self._overlay is not None:
+            try:
+                self._overlay.move_to(gp)
+                self._overlay.raise_()
+            except Exception:
+                pass
+        local = vp.mapFromGlobal(gp)
+        inside = vp.rect().contains(local)
+
+        if not inside:
+            if _active_state.target_mesh or _active_state.has_hit:
+                _active_state.target_mesh = ""
+                _active_state.has_hit = False
+                self._highlight_mesh("")
+                self._set_material_hint(None)
+            if self._overlay is not None:
+                self._overlay.set_valid(False)
+            return
+
+        cur_px = (local.x(), local.y())
+        if cur_px == getattr(self, "_last_cursor_px", None):
+            return
+        self._last_cursor_px = cur_px
+
+        try:
+            dpr = vp.devicePixelRatioF()
+        except Exception:
+            dpr = 1.0
+        _hit, loc, normal, on_floor, hit_node = _raycast_scene(round(local.x() * dpr), round(local.y() * dpr))
+        # Only a real mesh hit (not the floor fallback) is a valid target.
+        mesh_hit = bool(hit_node) and not on_floor
+        target = hit_node if mesh_hit else ""
+        if self._overlay is not None:
+            self._overlay.set_valid(mesh_hit)
+        if target != _active_state.target_mesh:
+            _active_state.target_mesh = target
+            _active_state.has_hit = mesh_hit
+            _active_state.location = loc
+            _active_state.surface_normal = normal
+            self._highlight_mesh(target)
+            self._set_material_hint(target or None)
+
+    def _poll_hdri(self) -> None:
+        """Cursor poll for HDRI drops — just keep the badge under the cursor.
+
+        HDRIs become a world-level environment light, so there is no mesh
+        target and no raycast: the drop is valid anywhere inside the viewport.
+        """
+        vp = self._vp_widget or _get_viewport_widget()
+        if vp is None:
+            return
+        if vp is not self._vp_widget:
+            self._vp_widget = vp
+        try:
+            gp = QCursor.pos()
+        except Exception:
+            log.exception("Could not get global cursor position; stopping drag")
+            return
+        if self._overlay is not None:
+            try:
+                self._overlay.move_to(gp)
+                self._overlay.raise_()
+            except Exception:
+                pass
+        local = vp.mapFromGlobal(gp)
+        inside = vp.rect().contains(local)
+        _active_state.has_hit = inside
+        if self._overlay is not None:
+            self._overlay.set_valid(inside)
+
+    def _highlight_mesh(self, mesh: str) -> None:
+        """Select the mesh under the cursor so it lights up in the viewport.
+
+        This is the drag feedback for material drops (there is no bounding-box
+        helper). Passing an empty string restores the user's original
+        selection. The standard Maya selection highlight gives an unmistakable
+        “this mesh will receive the material” cue.
+        """
+        if mesh == self._hilited_mesh:
+            return
+        self._hilited_mesh = mesh
+        try:
+            import maya.cmds as cmds
+
+            if mesh and cmds.objExists(mesh):
+                cmds.select(mesh, replace=True)
+            elif self._orig_selection:
+                existing = [n for n in self._orig_selection if cmds.objExists(n)]
+                if existing:
+                    cmds.select(existing, replace=True)
+                else:
+                    cmds.select(clear=True)
+            else:
+                cmds.select(clear=True)
+        except Exception as exc:
+            log.debug("material highlight select failed: %s", exc)
+        _refresh_viewport(light=True)
+
+    def _restore_selection(self) -> None:
+        """Restore the selection captured at the start of a material drag."""
+        self._hilited_mesh = ""
+        try:
+            import maya.cmds as cmds
+
+            existing = [n for n in self._orig_selection if cmds.objExists(n)]
+            if existing:
+                cmds.select(existing, replace=True)
+            else:
+                cmds.select(clear=True)
+        except Exception as exc:
+            log.debug("material restore selection failed: %s", exc)
+        self._orig_selection = []
+
+    def _set_material_hint(self, mesh: str | None) -> None:
+        """Show the current material-assignment target in the viewport HUD."""
+        try:
+            import maya.cmds as cmds
+        except Exception:
+            return
+        if mesh:
+            short = mesh.rsplit("|", 1)[-1]
+            msg = f"Assign material to <hl>{short}</hl>"
+        else:
+            msg = "Hover a mesh to assign the material"
+        try:
+            cmds.inViewMessage(amg=msg, pos="topCenter", fade=False, clear="topCenter", fontSize=14)
+        except Exception as exc:
+            log.debug("material hint inViewMessage failed: %s", exc)
 
     def _publish_bbox_to_locator(self) -> None:
         """Write the cached bbox_min/bbox_max onto the locator shape."""
@@ -1419,6 +1769,42 @@ class DragSession(QObject):  # type: ignore
         if getattr(self, "_drop_fired", False):
             return
         self._drop_fired = True
+
+        # Material mode: only assign when the cursor is over a mesh. A drop on
+        # empty space / the floor does nothing (materials need a target mesh).
+        if _active_state.is_material:
+            if _active_state.has_hit and _active_state.target_mesh:
+                # Leave the target mesh selected as feedback during the
+                # download; the async assign step reselects it on completion.
+                self._orig_selection = []
+                self._trigger_download()
+            else:
+                log.info("Material dropped off-mesh — ignored (needs a mesh target).")
+                self._restore_selection()
+                try:
+                    import maya.cmds as cmds
+
+                    cmds.inViewMessage(
+                        amg="Drop the material directly onto a mesh.",
+                        pos="topCenter",
+                        fade=True,
+                        fadeStayTime=1500,
+                    )
+                except Exception:
+                    pass
+            self._cleanup()
+            return
+
+        # HDRI mode: drop anywhere in the viewport creates an environment
+        # light. Location is irrelevant (world-level), so always download.
+        if _active_state.is_hdri:
+            if _active_state.has_hit:
+                self._trigger_download()
+            else:
+                log.info("HDRI dropped outside the viewport — ignored.")
+            self._cleanup()
+            return
+
         # Set download state to 'downloading' (1)
         if self._locator_name is not None:
             try:
@@ -1457,6 +1843,7 @@ class DragSession(QObject):  # type: ignore
                 rotation_y=-rot_y,
                 locator_name=self._locator_name or "",
                 surface_normal=_active_state.surface_normal,
+                target_mesh=_active_state.target_mesh,
             )
         except ModuleNotFoundError:
             log.info(
@@ -1471,6 +1858,23 @@ class DragSession(QObject):  # type: ignore
     def _cleanup(self) -> None:
         global _active_state
         _active_state.active = False
+
+        # Tear down the cursor-following drag badge (material drags).
+        try:
+            if self._overlay is not None:
+                self._overlay.hide()
+                self._overlay.deleteLater()
+        except Exception:
+            pass
+        self._overlay = None
+
+        # Material drag: restore the user's original selection if it wasn't
+        # already consumed by a successful on-mesh drop (which clears
+        # ``_orig_selection`` and keeps the target selected). On cancel
+        # (RMB/ESC) or an off-mesh drop, ``_orig_selection`` is still set.
+        if self._orig_selection:
+            self._restore_selection()
+        self._hilited_mesh = ""
 
         # Drop any pending proxor-download subscription so a late /report
         # for this asset doesn't fire on a dead drag session.
@@ -1542,6 +1946,34 @@ def start_drag(asset_data: dict[str, Any], thumb_path: str) -> None:
 
 def place_at_origin(asset_data: dict[str, Any], thumb_path: str) -> None:
     """Place asset at (0,0,0) immediately (no drag)."""
+    # Materials must be dropped onto a mesh — a click (no drag) has no target,
+    # so there is nothing to place at the origin. Hint the user to drag instead.
+    if _is_material_asset(asset_data):
+        log.info("Material clicked (no drag) — drag it onto a mesh to assign it.")
+        try:
+            import maya.cmds as cmds
+
+            cmds.inViewMessage(
+                amg="Drag the material onto a mesh to assign it.",
+                pos="topCenter",
+                fade=True,
+                fadeStayTime=1500,
+            )
+        except Exception:
+            pass
+        return
+    # HDRIs are world-level — a click is enough to add the environment light
+    # (no location needed). Kick the download straight off.
+    if _is_hdri_asset(asset_data):
+        log.info("HDRI clicked (no drag) — adding as environment light.")
+        try:
+            import importlib
+
+            bk_dl = importlib.import_module("bk_maya.core.download")
+            bk_dl.download_asset(asset_data)
+        except Exception as exc:
+            log.error("HDRI download dispatch failed: %s", exc)
+        return
     # Set up state
     global _active_state
     scale = _meters_to_internal()

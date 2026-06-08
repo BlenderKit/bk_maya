@@ -850,16 +850,98 @@ def _sanitize_meshes_for_usd_export() -> None:
 # ---------------------------------------------------------------------------
 
 
-def export_to_usd(blend_path: str, out_usd: str) -> None:
+def _prepare_material_asset(asset_name: str = "", asset_id: str = "") -> bool:
+    """Ensure a material asset is bound to a visible mesh before export.
+
+    BlenderKit material ``.blend`` files contain the material datablock but
+    frequently have **no mesh** using it (the addon appends the material and
+    assigns it to a user-picked object at import time). ``wm.usd_export`` only
+    writes materials that are bound to exported geometry, so without this step
+    the USD comes out empty and the Maya side reports "no material found".
+
+    We locate the asset material and, if no visible mesh already uses it,
+    create a simple plane and assign it. The plane's geometry/UVs are
+    irrelevant: the Maya side only lifts the resulting ``shadingEngine`` and
+    assigns it to the real target mesh, discarding the preview geometry.
+
+    Returns True when a material was found (and bound), False otherwise.
+    """
+    mats = list(bpy.data.materials)
+    if not mats:
+        log("material asset: no materials in blend")
+        return False
+
+    # Pick the asset material: prefer one marked as an asset, then match by
+    # BlenderKit id, then by name, finally fall back to the first material.
+    chosen = None
+    for m in mats:
+        if getattr(m, "asset_data", None) is not None:
+            chosen = m
+            break
+    if chosen is None and asset_id:
+        for m in mats:
+            bk = getattr(m, "blenderkit", None)
+            if bk is not None and getattr(bk, "id", "") == asset_id:
+                chosen = m
+                break
+    if chosen is None and asset_name:
+        for m in mats:
+            if m.name == asset_name:
+                chosen = m
+                break
+    if chosen is None:
+        chosen = mats[0]
+    log(f"material asset: chosen material = {chosen.name!r}")
+
+    # Already bound to a visible mesh? Then there's nothing to do.
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        if any(slot and slot.name == chosen.name for slot in obj.data.materials):
+            log(f"material asset: already on mesh {obj.name!r}")
+            return True
+
+    # Build a unit plane and assign the material.
+    mesh = bpy.data.meshes.new(f"{chosen.name}_preview")
+    verts = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)]
+    faces = [(0, 1, 2, 3)]
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    # A 0..1 UV map so any image textures resolve during export.
+    uv = mesh.uv_layers.new(name="UVMap")
+    uv_coords = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    for loop in mesh.loops:
+        uv.data[loop.index].uv = uv_coords[loop.vertex_index]
+    mesh.materials.append(chosen)
+
+    obj = bpy.data.objects.new(f"{chosen.name}_preview", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    log(f"material asset: created preview plane for {chosen.name!r}")
+    return True
+
+
+def export_to_usd(
+    blend_path: str, out_usd: str, asset_type: str = "model", asset_name: str = "", asset_id: str = ""
+) -> None:
     """Export a .blend to .usd with the necessary pre-processing for Maya compatibility.
 
     Attributes:
       - blend_path: path to the source .blend file to export
       - out_usd: path to write the resulting .usd file
+      - asset_type: BlenderKit asset type ("material" gets a preview-mesh step)
+      - asset_name: asset display name (used to locate the asset material)
+      - asset_id: BlenderKit asset id (used to locate the asset material)
     """
     status("Opening blend")
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     progress(0.05, "Opening blend")
+
+    # Material assets carry the material datablock but usually no mesh — bind
+    # it to a preview plane so wm.usd_export actually writes the material.
+    if asset_type.lower() == "material":
+        status("Preparing material")
+        if not _prepare_material_asset(asset_name, asset_id):
+            log("material asset: no material to bind (export may be empty)")
 
     # Make everything visible so the export captures the full asset.
     for obj in bpy.context.scene.objects:
@@ -1000,7 +1082,13 @@ def main() -> int:
         return 1
 
     try:
-        export_to_usd(blend_path, out_usd)
+        export_to_usd(
+            blend_path,
+            out_usd,
+            asset_type=str(params.get("asset_type") or "model"),
+            asset_name=str(params.get("asset_name") or ""),
+            asset_id=str(params.get("asset_id") or ""),
+        )
     except Exception as exc:
         error(f"export failed: {exc}")
         traceback.print_exc(file=sys.stdout)

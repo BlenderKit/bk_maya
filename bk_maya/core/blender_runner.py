@@ -86,12 +86,33 @@ def _candidate_paths() -> list[str]:
     return out
 
 
+def resolve_macos_app(path: str) -> str:
+    """Resolve a macOS ``Blender.app`` bundle to its inner executable.
+
+    On macOS Blender ships as an application bundle. File pickers return the
+    ``.app`` directory rather than the runnable binary inside it, so map any
+    ``*.app`` path to ``<app>/Contents/MacOS/Blender``. Non-macOS paths and
+    paths that are already the inner binary are returned unchanged.
+    """
+    if sys.platform != "darwin" or not path:
+        return path
+    # Normalise a trailing slash (e.g. "/Applications/Blender.app/").
+    stripped = path.rstrip("/")
+    if stripped.endswith(".app"):
+        inner = os.path.join(stripped, "Contents", "MacOS", "Blender")
+        if os.path.isfile(inner):
+            return inner
+    return path
+
+
 def find_blender_executable() -> str:
     """Locate a usable Blender executable.  Returns "" if none found."""
     # 1) User pref
     candidate = (prefs.blender_exe or "").strip()
-    if candidate and os.path.isfile(candidate):
-        return candidate
+    if candidate:
+        candidate = resolve_macos_app(candidate)
+        if os.path.isfile(candidate):
+            return candidate
 
     # 2) Env var
     env = os.environ.get("BLENDER_PATH", "").strip()

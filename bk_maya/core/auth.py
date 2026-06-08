@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from typing import Any
 
 from ..api import client as api
@@ -114,6 +115,21 @@ _login_error: str = ""
 _refresh_inflight = False
 _refresh_lock = threading.Lock()
 
+# Cached numeric id of the logged-in user (for "My assets only" search).
+# Populated asynchronously from a ``profiles/get_user_profile`` client task and
+# cleared on every login and logout.
+_user_id: int | None = None
+_user_id_lock = threading.Lock()
+
+# Listeners notified (on the GUI/poller thread) once the profile id is cached.
+_profile_listeners: list[Callable[[], None]] = []
+
+
+def _invalidate_user_id() -> None:
+    global _user_id
+    with _user_id_lock:
+        _user_id = None
+
 
 def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
     """Callback registered with the client for every ``login`` task."""
@@ -126,6 +142,9 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
             "expires_at": time.time() + int(result.get("expires_in", 3600)),
         }
         _save_tokens(tokens)
+        _invalidate_user_id()
+        # Eagerly fetch the profile so "My assets only" works on first use.
+        fetch_profile()
         log.info("BlenderKit tokens received from client.")
     else:
         _login_error = message or "Login failed"
@@ -141,6 +160,38 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
 client_lib.set_login_callback(_on_login_task)
 
 
+def _on_profile_task(result: dict[str, Any], status: str, message: str) -> None:
+    """Callback for the client's ``profiles/get_user_profile`` task.
+
+    Caches the logged-in user's numeric id and notifies any listeners so the
+    UI can refresh a pending "My assets only" search. Runs on the poller
+    (GUI) thread.
+    """
+    global _user_id
+    if status != "finished":
+        log.warning("Could not load user profile: %s", message or "unknown error")
+        return
+
+    user = result.get("user") if isinstance(result, dict) else None
+    uid = user.get("id") if isinstance(user, dict) else None
+    if uid is None:
+        log.warning("User profile response had no user id.")
+        return
+
+    with _user_id_lock:
+        _user_id = int(uid)
+    log.debug("Cached user id %s for 'My assets only' filter.", _user_id)
+
+    for cb in _profile_listeners:
+        try:
+            cb()
+        except Exception:
+            log.exception("Profile listener raised")
+
+
+client_lib.set_profile_callback(_on_profile_task)
+
+
 # -------------------------------------------------------------------------
 # Public API
 # -------------------------------------------------------------------------
@@ -148,6 +199,44 @@ client_lib.set_login_callback(_on_login_task)
 
 def is_logged_in() -> bool:
     return bool(_load_tokens().get("access_token"))
+
+
+def add_profile_listener(cb: Callable[[], None]) -> None:
+    """Register *cb* to be called (on the poller thread) when the user profile
+    id becomes available. Used by the UI to refresh a "My assets only" search.
+    """
+    if cb not in _profile_listeners:
+        _profile_listeners.append(cb)
+
+
+def fetch_profile() -> None:
+    """Trigger an async profile fetch via the client (no-op if not logged in).
+
+    The result arrives on the report poller as a ``profiles/get_user_profile``
+    task handled by ``_on_profile_task``.
+    """
+    api_key = get_api_key()
+    if not api_key:
+        return
+    try:
+        client_lib.ensure_running()
+        client_lib.get_user_profile(api_key)
+    except Exception as exc:
+        log.warning("Could not request user profile: %s", exc)
+
+
+def get_user_id() -> int | None:
+    """Return the cached logged-in user's numeric id, or ``None``.
+
+    Non-blocking: if the id is not cached yet it triggers an async fetch and
+    returns ``None`` for now. The "My assets only" filter applies once the
+    profile arrives (listeners re-run the search).
+    """
+    with _user_id_lock:
+        if _user_id is not None:
+            return _user_id
+    fetch_profile()
+    return None
 
 
 def get_api_key() -> str:
@@ -242,4 +331,5 @@ def logout() -> None:
         except Exception as exc:
             log.warning("Client-side logout failed: %s", exc)
     _clear_tokens()
+    _invalidate_user_id()
     log.info("Logged out.")

@@ -454,10 +454,14 @@ def _main_badge_pix(asset: dict[str, Any]) -> QPixmap | None:
 
 
 def _verification_pix(asset: dict[str, Any]) -> QPixmap | None:
-    """Return verification-status badge (vs_*.png), or None."""
+    """Return verification-status badge (vs_*.png), or None.
+
+    Mirrors the Blender addon (``ui.verification_icons``): "validated" maps to
+    no badge so normal browsing — where every public asset is validated — stays
+    visually clean.  Only non-validated states get a badge.
+    """
     status = (asset.get("verificationStatus") or "").lower().replace(" ", "_")
     icon_map = {
-        "validated": "vs_validated",
         "ready": "vs_ready",
         "on_hold": "vs_on_hold",
         "uploaded": "vs_uploaded",
@@ -523,6 +527,14 @@ class AssetTile(QFrame):
         self._lock_badge.setFixedSize(_BADGE_SIZE, _BADGE_SIZE)
         self._lock_badge.hide()
 
+        # Top-right: verification-status icon (vs_uploaded / vs_rejected / …).
+        # Hidden for validated assets so normal browsing stays clean — mirrors
+        # the Blender addon (ui.verification_icons maps "validated" → None).
+        self._vs_badge = QLabel(self._thumb)
+        self._vs_badge.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._vs_badge.setFixedSize(_BADGE_SIZE, _BADGE_SIZE)
+        self._vs_badge.hide()
+
         # Asset name label
         self._name = QLabel("…")
         self._name.setAlignment(Qt.AlignCenter)
@@ -562,6 +574,15 @@ class AssetTile(QFrame):
                 self._lock_badge.show()
                 self._lock_badge.raise_()
 
+        # ── Verification-status badge (top-right) — non-validated assets only.
+        vs_pix = _verification_pix(asset)
+        if vs_pix and not vs_pix.isNull():
+            self._vs_badge.setPixmap(vs_pix)
+            self._vs_badge.move(self._thumb_sz - _BADGE_SIZE - 4, 4)
+            self._vs_badge.setToolTip((asset.get("verificationStatus") or "").replace("_", " ").title())
+            self._vs_badge.show()
+            self._vs_badge.raise_()
+
         # ── Thumbnail handling ─────────────────────────────────────────────
         # The local client downloads all thumbnails into the search tempdir
         # and notifies us via ``thumbnail_download`` tasks.  Register here
@@ -594,6 +615,8 @@ class AssetTile(QFrame):
 
         if self._lock_badge.isVisible():
             self._lock_badge.move(thumb_sz - _BADGE_SIZE - 4, thumb_sz - _BADGE_SIZE - 4)
+        if self._vs_badge.isVisible():
+            self._vs_badge.move(thumb_sz - _BADGE_SIZE - 4, 4)
 
     # ── Context menu ─────────────────────────────────────────────────────
 
@@ -811,10 +834,12 @@ class AssetGrid(QWidget):
         self._query: str = ""
         self._asset_type: str = "model"
         self._results: list[dict[str, Any]] = []
+        self._seen_ids: set[str] = set()
         self._total: int = 0
         self._next_url: str = ""  # cursor URL for next page
         self._loading: bool = False
         self._free_only: bool = False
+        self._my_assets_only: bool = False
         self._quality_limit: int = 0
         self._license_filter: str = "ANY"
         self._animated_only: bool = False
@@ -927,6 +952,7 @@ class AssetGrid(QWidget):
             query=self._query,
             asset_type=self._asset_type,
             free_only=self._free_only,
+            my_assets_only=self._my_assets_only,
             quality_limit=self._quality_limit,
             license_filter=self._license_filter,
             animated_only=self._animated_only,
@@ -972,6 +998,7 @@ class AssetGrid(QWidget):
         query: str,
         asset_type: str,
         free_only: bool = False,
+        my_assets_only: bool = False,
         quality_limit: int = 0,
         license_filter: str = "ANY",
         animated_only: bool = False,
@@ -990,6 +1017,7 @@ class AssetGrid(QWidget):
         self._query = query
         self._asset_type = asset_type
         self._free_only = free_only
+        self._my_assets_only = my_assets_only
         self._quality_limit = quality_limit
         self._license_filter = license_filter
         self._animated_only = animated_only
@@ -1005,6 +1033,7 @@ class AssetGrid(QWidget):
         self._design_year_max = design_year_max
         self._geometry_nodes = geometry_nodes
         self._results = []
+        self._seen_ids = set()
         self._total = 0
         self._next_url = ""
         self._loading = True
@@ -1040,6 +1069,7 @@ class AssetGrid(QWidget):
             query=query,
             asset_type=asset_type,
             free_only=free_only,
+            my_assets_only=my_assets_only,
             quality_limit=quality_limit,
             license_filter=license_filter,
             animated_only=animated_only,
@@ -1089,6 +1119,22 @@ class AssetGrid(QWidget):
         self._total = total
         self._next_url = next_url or ""
         log.debug("_on_results count=%d total=%d next=%r", len(results), total, self._next_url or "(none)")
+
+        # Deleted assets still exist on the backend but must not be shown to the
+        # user — they only cause confusion. Drop them before populating tiles.
+        # Also drop assets we've already shown: pages can overlap and return the
+        # same asset twice, which would spawn duplicate thumbnail tiles.
+        deduped: list[dict[str, Any]] = []
+        for a in results:
+            if (a.get("verificationStatus") or "").lower() == "deleted":
+                continue
+            asset_id = a.get("assetBaseId") or a.get("id") or ""
+            if asset_id and asset_id in self._seen_ids:
+                continue
+            if asset_id:
+                self._seen_ids.add(asset_id)
+            deduped.append(a)
+        results = deduped
 
         if not results:
             if not self._results:
@@ -1257,6 +1303,12 @@ class _FiltersPanel(QWidget):
         self._free_only.setChecked(prefs.search_free_only)
         self._free_only.toggled.connect(self._schedule)
         body_l.addWidget(self._free_only)
+
+        # My assets only (requires login; constrains results to author_id)
+        self._my_assets = QCheckBox("My assets only")
+        self._my_assets.setChecked(prefs.search_my_assets_only)
+        self._my_assets.toggled.connect(self._schedule)
+        body_l.addWidget(self._my_assets)
 
         # Quality limit
         quality_row = QHBoxLayout()
@@ -1488,13 +1540,64 @@ class _FiltersPanel(QWidget):
 
         root.addWidget(self._body)
         self._body.setVisible(False)
+        self._update_toggle_text(False)
+
+    def _active_filter_tokens(self) -> list[str]:
+        """Return short human-readable labels for every active filter."""
+        tokens: list[str] = []
+        if self._free_only.isChecked():
+            tokens.append("Free")
+        if self._my_assets.isChecked():
+            tokens.append("Mine")
+        if self._quality_check.isChecked() and self._quality_limit.value() > 0:
+            tokens.append(f"Quality≥{self._quality_limit.value()}")
+        lic = self._license.currentText()
+        if lic and lic != "Any":
+            tokens.append(lic)
+        if self._animated_only.isChecked():
+            tokens.append("Animated")
+        if self._tex_filter.isChecked():
+            tokens.append(f"Tex {self._tex_min.value()}–{self._tex_max.value()}px")
+        if self._poly_filter.isChecked():
+            tokens.append(f"Poly {self._poly_min.value()}–{self._poly_max.value()}K")
+        if self._fsize_filter.isChecked():
+            tokens.append(f"Size {self._fsize_min.value()}–{self._fsize_max.value()}MB")
+        if self._style.currentData() and self._style.currentData() != "ANY":
+            tokens.append(self._style.currentText())
+        if self._condition.currentData() and self._condition.currentData() != "UNSPECIFIED":
+            tokens.append(self._condition.currentText())
+        if self._dyear_filter.isChecked():
+            tokens.append(f"Year {self._dyear_min.value()}–{self._dyear_max.value()}")
+        if self._geo_nodes.isChecked():
+            tokens.append("Geo Nodes")
+        return tokens
+
+    def _update_toggle_text(self, checked: bool) -> None:
+        """Refresh the header label, summarising active filters when collapsed."""
+        arrow = "▼" if checked else "▶"
+        tokens = self._active_filter_tokens()
+        if not tokens:
+            self._toggle.setText(f"{arrow}  Filters")
+            self._toggle.setToolTip("")
+            return
+        if checked:
+            # Expanded: keep it short, just show the count.
+            self._toggle.setText(f"{arrow}  Filters  ({len(tokens)} active)")
+        else:
+            # Collapsed: show the active filters inline (truncated if long).
+            summary = " · ".join(tokens)
+            if len(summary) > 60:
+                summary = summary[:57].rstrip(" ·") + "…"
+            self._toggle.setText(f"{arrow}  Filters:  {summary}")
+        self._toggle.setToolTip("Active filters:\n• " + "\n• ".join(tokens))
 
     def _on_toggled(self, checked: bool) -> None:
-        self._toggle.setText(("▼" if checked else "▶") + "  Filters")
         self._body.setVisible(checked)
+        self._update_toggle_text(checked)
 
     def _schedule(self) -> None:
         prefs.search_free_only = self._free_only.isChecked()
+        prefs.search_my_assets_only = self._my_assets.isChecked()
         prefs.search_quality_limit = self._quality_limit.value() if self._quality_check.isChecked() else 0
         prefs.search_license = self._license_to_api(self._license.currentText())
         prefs.search_animated_only = self._animated_only.isChecked()
@@ -1513,6 +1616,7 @@ class _FiltersPanel(QWidget):
         prefs.search_design_year_min = self._dyear_min.value()
         prefs.search_design_year_max = self._dyear_max.value()
         prefs.search_geometry_nodes = self._geo_nodes.isChecked()
+        self._update_toggle_text(self._toggle.isChecked())
         self._debounce.start()
 
     @staticmethod
@@ -1542,6 +1646,10 @@ class _FiltersPanel(QWidget):
     @property
     def free_only(self) -> bool:
         return self._free_only.isChecked()
+
+    @property
+    def my_assets_only(self) -> bool:
+        return self._my_assets.isChecked()
 
     @property
     def quality_limit(self) -> int:
@@ -1769,6 +1877,8 @@ class AssetBarWidget(QWidget):
         self._login_banner.show_logs_clicked.connect(self._show_logs)
         self._login_banner.dismiss_clicked.connect(self._dismiss_banner)
         layout.addWidget(self._login_banner)
+        # Tab the banner's "Settings…" button should open (None → Account).
+        self._settings_tab: str | None = None
 
         self._search_bar = SearchBar()
         self._search_bar.search_requested.connect(self._on_search)
@@ -1786,9 +1896,22 @@ class AssetBarWidget(QWidget):
         self._grid = AssetGrid()
         layout.addWidget(self._grid, stretch=1)
 
+        # Refresh a pending "My assets only" search once the profile id loads.
+        auth.add_profile_listener(self._on_profile_loaded)
+
         _ensure_poller()
         self._refresh_login_state()
+        # Pre-fetch the profile so "My assets only" works on first toggle.
+        if auth.is_logged_in():
+            auth.fetch_profile()
         QTimer.singleShot(500, self._default_search)
+
+    def _on_profile_loaded(self) -> None:
+        """Re-run the active search when the user profile id arrives, but only
+        if the 'My assets only' filter is enabled (it needs the author_id).
+        """
+        if self._filters.my_assets_only:
+            self._on_filters_changed()
 
     def _refresh_login_state(self) -> None:
         if auth.is_logged_in():
@@ -1818,6 +1941,7 @@ class AssetBarWidget(QWidget):
         if ok:
             self._refresh_login_state()
             return
+        self._settings_tab = None
         self._login_banner.show_error(
             err or "Login failed. Try again, open Settings to paste an API key, or check logs.",
             retry_label="Try again",
@@ -1828,7 +1952,7 @@ class AssetBarWidget(QWidget):
         try:
             from .settings_dialog import open_settings
 
-            open_settings(tab="Account")
+            open_settings(tab=self._settings_tab or "Account")
         except Exception as exc:
             log.error("Cannot open settings dialog: %s", exc)
 
@@ -1847,8 +1971,13 @@ class AssetBarWidget(QWidget):
         else:
             self._login_banner.show_info()
 
-    def show_error(self, message: str) -> None:
-        """Public entry: surface a non-login error (e.g. download failure)."""
+    def show_error(self, message: str, settings_tab: str | None = None) -> None:
+        """Public entry: surface a non-login error (e.g. download failure).
+
+        *settings_tab* (e.g. "Files") routes the banner's "Settings…" button
+        to the relevant tab; defaults to the Account tab.
+        """
+        self._settings_tab = settings_tab
         self._login_banner.show_error(message, retry_label="Dismiss")
         self._login_banner.setVisible(True)
 
@@ -1860,6 +1989,7 @@ class AssetBarWidget(QWidget):
             query,
             asset_type,
             free_only=self._filters.free_only,
+            my_assets_only=self._filters.my_assets_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -1881,6 +2011,7 @@ class AssetBarWidget(QWidget):
             self._search_bar.current_query,
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
+            my_assets_only=self._filters.my_assets_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -1902,6 +2033,7 @@ class AssetBarWidget(QWidget):
             "",
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
+            my_assets_only=self._filters.my_assets_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -1929,6 +2061,7 @@ class AssetBarWidget(QWidget):
             "",
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
+            my_assets_only=self._filters.my_assets_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -2001,16 +2134,18 @@ def set_tile_size(size: int) -> None:
     log.info("Thumbnail size → %d px", size)
 
 
-def notify_error(message: str) -> None:
+def notify_error(message: str, settings_tab: str | None = None) -> None:
     """Surface an error on the asset bar's status banner.
 
     Safe to call from non-GUI threads — marshals to the main thread.
+    *settings_tab* routes the banner's "Settings…" button to a specific tab
+    (e.g. "Files" for a missing Blender executable).
     """
     bar = _current_bar
     if bar is None:
         log.warning("notify_error called but asset bar is not open: %s", message)
         return
-    QTimer.singleShot(0, lambda: bar.show_error(message))
+    QTimer.singleShot(0, lambda: bar.show_error(message, settings_tab=settings_tab))
 
 
 def _reopen_on_close() -> None:
