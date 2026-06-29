@@ -124,6 +124,11 @@ _user_id_lock = threading.Lock()
 # Listeners notified (on the GUI/poller thread) once the profile id is cached.
 _profile_listeners: list[Callable[[], None]] = []
 
+# Listeners notified (on the GUI/poller thread) after a *fresh* login completes
+# (i.e. a transition from logged-out to logged-in, not a token refresh). Used
+# by open UI such as the asset bar to refresh itself.
+_login_listeners: list[Callable[[], None]] = []
+
 
 def _invalidate_user_id() -> None:
     global _user_id
@@ -135,6 +140,9 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
     """Callback registered with the client for every ``login`` task."""
     global _login_error, _refresh_inflight
     if status == "finished" and result.get("access_token"):
+        # Distinguish a fresh login from a routine token refresh so we only
+        # poke the UI when the logged-in state actually changes.
+        was_logged_in = is_logged_in()
         tokens = {
             "access_token": result["access_token"],
             "refresh_token": result.get("refresh_token", ""),
@@ -145,6 +153,9 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
         _invalidate_user_id()
         # Eagerly fetch the profile so "My assets only" works on first use.
         fetch_profile()
+        # Trigger the asset bar (and any other UI) to refresh on fresh login.
+        if not was_logged_in:
+            _notify_login_listeners()
         log.info("Blendkit tokens received from client.")
     else:
         _login_error = message or "Login failed"
@@ -207,6 +218,30 @@ def add_profile_listener(cb: Callable[[], None]) -> None:
     """
     if cb not in _profile_listeners:
         _profile_listeners.append(cb)
+
+
+def add_login_listener(cb: Callable[[], None]) -> None:
+    """Register *cb* to run (on the poller thread) after a fresh login
+    completes, so open UI (e.g. the asset bar) can refresh itself.
+    """
+    if cb not in _login_listeners:
+        _login_listeners.append(cb)
+
+
+def remove_login_listener(cb: Callable[[], None]) -> None:
+    """Unregister a callback previously added with :func:`add_login_listener`."""
+    try:
+        _login_listeners.remove(cb)
+    except ValueError:
+        pass
+
+
+def _notify_login_listeners() -> None:
+    for cb in tuple(_login_listeners):
+        try:
+            cb()
+        except Exception:
+            log.exception("Login listener raised")
 
 
 def fetch_profile() -> None:

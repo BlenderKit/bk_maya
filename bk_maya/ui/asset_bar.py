@@ -58,10 +58,7 @@ from ..core.prefs import prefs
 
 log = logging.getLogger(__name__)
 
-# NOTE: Bumped from "BlendkitAssetBar" so old workspaceControl state
-# (created without ``retain``/``closeCommand``) from prior sessions is
-# bypassed and the close-protection flags below actually take effect.
-CONTROL_NAME = "BlendkitAssetBarV2"
+CONTROL_NAME = "BlendkitAssetBar"
 GRID_SPACING = 6
 PAGE_SIZE = 24
 
@@ -75,6 +72,21 @@ ASSET_TYPES = [
 
 # Assigned in _populate_workspace_control()
 _current_bar: AssetBarWidget | None = None
+
+
+def _on_login_state_changed() -> None:
+    """Login listener (registered once at import): refresh the live panel.
+
+    Called by ``auth`` on the poller thread after a fresh login; marshals onto
+    the Qt GUI thread to hide the login banner and re-run the active search.
+    """
+    bar = _current_bar
+    if bar is None:
+        return
+    QTimer.singleShot(0, bar.on_logged_in)
+
+
+auth.add_login_listener(_on_login_state_changed)
 
 
 # ---------------------------------------------------------------------------
@@ -1920,6 +1932,16 @@ class AssetBarWidget(QWidget):
             self._login_banner.show_info()
             self._login_banner.setVisible(True)
 
+    def on_logged_in(self) -> None:
+        """React to a fresh login (banner away + refresh content).
+
+        Invoked on the GUI thread via the module-level login listener. Hides
+        the login banner and re-runs the active search so the grid reflects the
+        now logged-in state (e.g. enables personalised/"My assets" results).
+        """
+        self._refresh_login_state()
+        self._on_filters_changed()
+
     def _do_login(self) -> None:
         self._login_banner.set_busy(True, "Waiting for browser…")
 
@@ -1938,6 +1960,7 @@ class AssetBarWidget(QWidget):
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_login_result(self, ok: bool, err: str) -> None:
+        log.info("Login result: %s, err=%s", ok, err)
         if ok:
             self._refresh_login_state()
             return
@@ -2098,7 +2121,7 @@ def open_asset_bar() -> None:
 
     # Best-effort: clean up the *legacy* control name from older revisions
     # of this addon so we don't leave a dead tab in the Maya UI.
-    for legacy in ("BlendkitAssetBar",):
+    for legacy in ("BlenderKitAssetBar",):
         try:
             if cmds.workspaceControl(legacy, query=True, exists=True):
                 cmds.deleteUI(legacy, control=True)
@@ -2122,6 +2145,13 @@ def open_asset_bar() -> None:
         kw["floating"] = True
 
     cmds.workspaceControl(CONTROL_NAME, **kw)
+    # Raise/focus the freshly created control so it becomes the active tab
+    # (without this, a new control docked next to the AttributeEditor stays
+    # behind whatever tab was previously on top).
+    try:
+        cmds.workspaceControl(CONTROL_NAME, edit=True, restore=True, visible=True)
+    except Exception as exc:
+        log.debug("Could not raise new asset bar control: %s", exc)
     log.info("Blendkit asset bar opened.")
 
 
