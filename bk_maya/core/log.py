@@ -1,4 +1,4 @@
-"""Logging configuration for the BlenderKit Maya plugin.
+"""Logging configuration for the Blendkit Maya plugin.
 
 Mirrors the Blender addon's ``log.py`` but without any ``bpy`` dependency.
 
@@ -28,7 +28,7 @@ bk_logger = logging.getLogger(__name__)
 # ── Formatters ────────────────────────────────────────────────────────────────
 
 
-class BlenderKitFormatter(logging.Formatter):
+class BlendkitFormatter(logging.Formatter):
     """Prefix log records with an emoji for the log level and mask API keys.
 
     Temporary tokens (30 chars) → ``***``
@@ -61,8 +61,8 @@ class SensitiveFormatter(logging.Formatter):
         return msg
 
 
-def _bk_formatter() -> BlenderKitFormatter:
-    return BlenderKitFormatter(
+def _bk_formatter() -> BlendkitFormatter:
+    return BlendkitFormatter(
         fmt="%(levelname)sbk_maya: %(message)s [%(asctime)s.%(msecs)03d, %(filename)s:%(lineno)d]",
         datefmt="%H:%M:%S",
     )
@@ -85,7 +85,7 @@ def configure_bk_logger() -> None:
     propagate to this logger automatically.
     """
     logger = logging.getLogger("bk_maya")
-    logger.setLevel(global_vars.LOGGING_LEVEL_BLENDERKIT)
+    logger.setLevel(global_vars.LOGGING_LEVEL_BLENDKIT)
     logger.propagate = False
     logger.handlers = []
 

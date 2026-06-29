@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for your suggestion! You help us to improve BlenderKit.
+        Thank you for your suggestion! You help us to improve Blendkit.
 
   - type: textarea
     id: problem

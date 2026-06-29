@@ -1,4 +1,4 @@
-"""BlenderKit asset bar — PySide6 side panel for Maya.
+"""Blendkit asset bar — PySide6 side panel for Maya.
 
 Entry point: ``open_asset_bar()``
 
@@ -58,10 +58,10 @@ from ..core.prefs import prefs
 
 log = logging.getLogger(__name__)
 
-# NOTE: Bumped from "BlenderKitAssetBar" so old workspaceControl state
+# NOTE: Bumped from "BlendkitAssetBar" so old workspaceControl state
 # (created without ``retain``/``closeCommand``) from prior sessions is
 # bypassed and the close-protection flags below actually take effect.
-CONTROL_NAME = "BlenderKitAssetBarV2"
+CONTROL_NAME = "BlendkitAssetBarV2"
 GRID_SPACING = 6
 PAGE_SIZE = 24
 
@@ -127,7 +127,7 @@ class _SmoothScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Report poller  — pulls task updates from the local blenderkit-client
+# Report poller  — pulls task updates from the local blendkit-client
 # ---------------------------------------------------------------------------
 #
 # Search results and thumbnail file paths are delivered as ``search`` and
@@ -246,7 +246,7 @@ class AssetDetailDialog(QDialog):
         _row("License", _license_label(asset))
         _row("Downloads", str(asset.get("downloadCount") or ""))
 
-        # Average rating (BlenderKit returns ``ratingsAverage`` as dict
+        # Average rating (Blendkit returns ``ratingsAverage`` as dict
         # ``{"quality": x, "working_hours": y}`` and ``ratingsCount`` similarly).
         rat_avg = asset.get("ratingsAverage") or {}
         rat_cnt = asset.get("ratingsCount") or {}
@@ -258,7 +258,7 @@ class AssetDetailDialog(QDialog):
         if avg_q:
             try:
                 avg_f = float(avg_q)
-                # BlenderKit uses a 1..10 scale (same as the Blender addon).
+                # Blendkit-maya uses a 1..10 scale (same as the Blendkit-blender addon).
                 filled = max(0, min(10, int(round(avg_f))))  # noqa: RUF046
                 stars = "★" * filled + "☆" * (10 - filled)
                 _row("Rating", f"<span style='color:#f5c33b'>{stars}</span>  {avg_f:.1f}  ({cnt_q or 0})")
@@ -331,9 +331,9 @@ class AssetDetailDialog(QDialog):
 
         slug = asset.get("slug", "") or asset_id
         if slug:
-            view_btn = QPushButton("View on BlenderKit.com")
+            view_btn = QPushButton("View on Blendkit.com")
             view_btn.clicked.connect(
-                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
+                lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/")
             )
             btn_row.addWidget(view_btn)
 
@@ -644,9 +644,9 @@ class AssetTile(QFrame):
 
         slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
         if slug:
-            web_act = QAction("View on BlenderKit.com", menu)
+            web_act = QAction("View on Blendkit.com", menu)
             web_act.triggered.connect(
-                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
+                lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/")
             )
             menu.addAction(web_act)
 
@@ -1211,7 +1211,7 @@ class SearchBar(QWidget):
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Search BlenderKit assets…")
+        self._input.setPlaceholderText("Search Blendkit assets…")
         self._input.returnPressed.connect(self._emit)
         input_row.addWidget(self._input)
         btn = QPushButton("Search")
@@ -1815,7 +1815,7 @@ class _LoginBanner(QWidget):
 
 
 class _BrandHeader(QWidget):
-    """Blue title strip with the BlenderKit logo, shown at the very top of
+    """Blue title strip with the Blendkit logo, shown at the very top of
     the asset bar.  Always visible — it survives Maya redocking and floating
     the workspaceControl, so the panel keeps its identity regardless of how
     Maya chrome renders the tab.
@@ -1828,7 +1828,7 @@ class _BrandHeader(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
             "QWidget#BKBrandHeader {"
-            "  background-color: #2a6bd6;"  # BlenderKit blue
+            "  background-color: #2a6bd6;"  # Blendkit blue
             "  border-bottom: 1px solid #1d4f9e;"
             "}"
             "QLabel#BKBrandText {"
@@ -1852,7 +1852,7 @@ class _BrandHeader(QWidget):
             pass
         row.addWidget(logo)
 
-        text = QLabel("BlenderKit", self)
+        text = QLabel("Blendkit", self)
         text.setObjectName("BKBrandText")
         row.addWidget(text)
         row.addStretch()
@@ -1861,7 +1861,7 @@ class _BrandHeader(QWidget):
 class AssetBarWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("BlenderKit")
+        self.setWindowTitle("Blendkit")
         self.setMinimumWidth(260)
 
         layout = QVBoxLayout(self)
@@ -2086,7 +2086,7 @@ class AssetBarWidget(QWidget):
 
 
 def open_asset_bar() -> None:
-    """Create or restore the BlenderKit side panel (docked by default)."""
+    """Create or restore the Blendkit side panel (docked by default)."""
     if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
         cmds.workspaceControl(
             CONTROL_NAME,
@@ -2098,7 +2098,7 @@ def open_asset_bar() -> None:
 
     # Best-effort: clean up the *legacy* control name from older revisions
     # of this addon so we don't leave a dead tab in the Maya UI.
-    for legacy in ("BlenderKitAssetBar",):
+    for legacy in ("BlendkitAssetBar",):
         try:
             if cmds.workspaceControl(legacy, query=True, exists=True):
                 cmds.deleteUI(legacy, control=True)
@@ -2107,7 +2107,7 @@ def open_asset_bar() -> None:
 
     # Allow the panel to be closed via the X button or panel close.
     kw = {
-        "label": "BlenderKit",
+        "label": "Blendkit",
         "uiScript": ("import bk_maya.ui.asset_bar as _ab; _ab._populate_workspace_control()"),
         "initialWidth": 340,
         "retain": True,
@@ -2122,7 +2122,7 @@ def open_asset_bar() -> None:
         kw["floating"] = True
 
     cmds.workspaceControl(CONTROL_NAME, **kw)
-    log.info("BlenderKit asset bar opened.")
+    log.info("Blendkit asset bar opened.")
 
 
 def set_tile_size(size: int) -> None:

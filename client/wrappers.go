@@ -72,7 +72,7 @@ func BlockingFileDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only attach Bearer auth when an API key is supplied. Signed CDN URLs
-	// (assets.blenderkit.com/...?verify=...) carry their own auth and reject
+	// (assets.blendkit.com/...?verify=...) carry their own auth and reject
 	// any Authorization header that wasn't part of the signature, so callers
 	// pass an empty key for those and we must send no Authorization header.
 	if data.APIKey != "" {

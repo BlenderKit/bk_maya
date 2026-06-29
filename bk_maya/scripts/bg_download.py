@@ -1,8 +1,8 @@
-"""BlenderKit Maya â€” background Blender script.
+"""Blendkit Maya script — background Blender script.
 
 Executed inside ``blender --background --python <this> -- <args.json>``.
 
-It downloads a chosen .blend resolution from BlenderKit, opens it, links/appends
+It downloads a chosen .blend resolution from Blendkit, opens it, links/appends
 the asset, exports the scene to a USD (.usd) file with UsdPreviewSurface
 materials + texture references, and reports progress on stdout using the
 protocol consumed by :mod:`bk_maya.core.blender_runner`::
@@ -12,8 +12,8 @@ protocol consumed by :mod:`bk_maya.core.blender_runner`::
     BK_DONE     <output-path>
     BK_ERROR    <message>
 
-The script is intentionally self-contained â€” it does **not** import or depend
-on the BlenderKit Blender addon.  It only relies on ``bpy`` and Python stdlib.
+The script is intentionally self-contained script it does **not** import or depend
+on the Blendkit Blender addon.  It only relies on ``bpy`` and Python stdlib.
 """
 
 from __future__ import annotations
@@ -109,9 +109,9 @@ def pick_download_url(asset_data: dict, max_resolution: str) -> tuple[str, str]:
 # Hosts on which a Bearer token is required to fetch a signed CDN URL.
 # Anything else is treated as already-signed and we MUST NOT attach Bearer
 # auth (CDN/S3 reject any Authorization header that wasn't in the signature).
-_BK_API_HOSTS = {"blenderkit.com", "www.blenderkit.com"}
+_BK_API_HOSTS = {"blendkit.com", "www.blendkit.com"}
 
-# Maya max_resolution pref → BlenderKit fileType / Go client resolution token.
+# Maya max_resolution pref → Blendkit fileType / Go client resolution token.
 _RES_TO_RESOLUTION = {
     "512": "resolution_0_5K",
     "1024": "resolution_1K",
@@ -131,7 +131,7 @@ def _is_bk_api_url(url: str) -> bool:
 
 
 def _client_post(base_url: str, path: str, payload: dict, *, timeout: int = 120) -> str:
-    """POST *payload* as JSON to the local BlenderKit Go client over loopback.
+    """POST *payload* as JSON to the local Blendkit Go client over loopback.
 
     The Go client performs the real external HTTPS request on our behalf, so
     Blender's Python never opens a TLS connection (its bundled SSL has no CA
@@ -218,14 +218,14 @@ def download_file_via_client(base_url: str, url: str, dest_path: str, *, app_id:
 
 
 def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
-    """Exchange a BlenderKit API ``downloadUrl`` for a signed CDN URL.
+    """Exchange a Blendkit API ``downloadUrl`` for a signed CDN URL.
 
-    BlenderKit's search response returns ``downloadUrl`` values pointing at an
-    API endpoint (e.g. ``https://www.blenderkit.com/api/v1/download/<id>/``).
+    Blendkit's search response returns ``downloadUrl`` values pointing at an
+    API endpoint (e.g. ``https://www.blendkit.com/api/v1/download/<id>/``).
     Hitting it with ``Bearer`` auth + ``scene_uuid`` returns JSON like
-    ``{"filePath": "https://public.blenderkit.com/.../file.blend?verify=..."}``.
+    ``{"filePath": "https://public.blendkit.com/.../file.blend?verify=..."}``.
 
-    If *api_url* is already on a non-blenderkit.com host (i.e. CDN/S3), it's
+    If *api_url* is already on a non-blendkit.com host (i.e. CDN/S3), it's
     returned unchanged.
     """
     if not _is_bk_api_url(api_url):
@@ -234,13 +234,13 @@ def resolve_signed_url(api_url: str, *, api_key: str, scene_uuid: str) -> str:
 
     if not api_key:
         raise RuntimeError(
-            "Authentication required for signed download URL â€” please log in to BlenderKit in Maya first."
+            "Authentication required for signed download URL â€” please log in to Blendkit in Maya first."
         )
 
     sep = "&" if "?" in api_url else "?"
     full = f"{api_url}{sep}scene_uuid={urllib.parse.quote(scene_uuid)}"
     headers = {
-        "User-Agent": "BlenderKit-Maya/0.1",
+        "User-Agent": "Blendkit-Maya/0.1",
         "Accept": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
@@ -280,12 +280,12 @@ def download_file(url: str, dest_path: str, *, api_key: str = "") -> None:
     (``client/download.go`` ``downloadAsset`` passes ``apiKey=""``).
     """
     headers = {
-        "User-Agent": "BlenderKit-Maya/0.1",
+        "User-Agent": "Blendkit-Maya/0.1",
         # Mirror the Go client â€” allow compressed transfer (#1486).
         "Cookie": "allow_compression=true",
     }
     if api_key and _is_bk_api_url(url):
-        # Only attach Bearer for blenderkit.com API hosts (not CDN/S3).
+        # Only attach Bearer for blendkit.com API hosts (not CDN/S3).
         headers["Authorization"] = f"Bearer {api_key}"
 
     log_line(f"download_file: GET {url[:160]}â€¦")
@@ -330,7 +330,7 @@ def _find_export_usd_script(args: dict) -> str:
 
     Lookup order:
       1. ``args["export_usd_script"]`` (explicit override from Maya side).
-      2. ``$BLENDERKIT_TOOLS_DIR/export_usd.py``.
+      2. ``$BLENDKIT_TOOLS_DIR/export_usd.py``.
       3. Walk up from this script: ``<repo>/client/tools/export_usd.py``.
     """
     candidates: list[str] = []
@@ -338,7 +338,7 @@ def _find_export_usd_script(args: dict) -> str:
     if override:
         candidates.append(override)
 
-    env_dir = os.environ.get("BLENDERKIT_TOOLS_DIR", "")
+    env_dir = os.environ.get("BLENDKIT_TOOLS_DIR", "")
     if env_dir:
         candidates.append(os.path.join(env_dir, "export_usd.py"))
 
@@ -354,7 +354,7 @@ def _find_export_usd_script(args: dict) -> str:
         if c and os.path.isfile(c):
             return c
     raise RuntimeError(
-        f"export_usd.py not found. Tried: {candidates}. Set BLENDERKIT_TOOLS_DIR or pass export_usd_script in args."
+        f"export_usd.py not found. Tried: {candidates}. Set BLENDKIT_TOOLS_DIR or pass export_usd_script in args."
     )
 
 
@@ -438,7 +438,7 @@ def main() -> int:
     # .blend instead of triggering a re-download.
     blend_path = args.get("blend_path") or ""
 
-    # Networking goes through the local BlenderKit Go client over loopback;
+    # Networking goes through the local Blendkit Go client over loopback;
     # direct HTTPS from Blender fails SSL verification on macOS.
     client_base_url = args.get("client_base_url") or ""
     app_id = int(args.get("app_id") or 0)

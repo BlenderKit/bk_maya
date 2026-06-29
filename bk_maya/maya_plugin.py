@@ -1,11 +1,11 @@
-"""BlenderKit Maya plugin entry point.
+"""Blendkit Maya plugin entry point.
 
 This file is discovered by Maya via the MAYA_PLUG_IN_PATH entry written in
-blenderkit_dev_hl.mod and appears in Maya's Plug-in Manager as maya_plugin.py.
+blendkit_dev_hl.mod and appears in Maya's Plug-in Manager as maya_plugin.py.
 
 Loading it (manually or via Auto load) will:
 1. Ensure bk_maya/lib (qtpy, packaging) and the repo root are on sys.path.
-2. Register BlenderKit commands and UI panels (populated incrementally).
+2. Register Blendkit commands and UI panels (populated incrementally).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ try:
 except Exception:  # pragma: no cover - defensive: never block plug-in load
     PLUGIN_VERSION = "0.1.dev"
 
-VENDOR = "BlenderKit s.r.o."
+VENDOR = "Blender Kit s.r.o."
 
 
 def maya_useNewAPI() -> None:
@@ -52,14 +52,14 @@ def _ensure_paths() -> None:
 
 
 def _add_shelf_button() -> None:
-    """Add a BlenderKit button to the active Maya shelf."""
+    """Add a Blendkit button to the active Maya shelf."""
     import maya.cmds as cmds  # type: ignore
     import maya.mel as mel  # type: ignore
 
     # Ensure there's a shelf to add to
     top_shelf = mel.eval("$tmpVar=$gShelfTopLevel")
     shelves = cmds.tabLayout(top_shelf, query=True, tabLabel=True) or []
-    shelf_name = "BlenderKit"
+    shelf_name = "Blendkit"
 
     if shelf_name not in shelves:
         mel.eval(f'addNewShelfTab "{shelf_name}";')
@@ -75,7 +75,7 @@ def _add_shelf_button() -> None:
     cmds.shelfButton(
         label="BKit",
         parent=shelf_name,
-        annotation="Open BlenderKit Asset Bar",
+        annotation="Open Blendkit Asset Bar",
         command="import bk_maya.ui.asset_bar as _ab; _ab.open_asset_bar()",
         sourceType="python",
         image="menuIconFile.png",  # generic icon; replace with bk icon later
@@ -85,12 +85,12 @@ def _add_shelf_button() -> None:
 def initializePlugin(plugin: om2.MObject) -> None:
     _ensure_paths()
     om2.MFnPlugin(plugin, VENDOR, PLUGIN_VERSION)
-    print(f"[BlenderKit] Plugin initialized (v{PLUGIN_VERSION})")
+    print(f"[Blendkit] Plugin initialized (v{PLUGIN_VERSION})")
     try:
         _add_shelf_button()
     except Exception as exc:
-        print(f"[BlenderKit] Shelf button not added: {exc}")
+        print(f"[Blendkit] Shelf button not added: {exc}")
 
 
 def uninitializePlugin(plugin: om2.MObject) -> None:
-    print("[BlenderKit] Plugin uninitialized.")
+    print("[Blendkit] Plugin uninitialized.")

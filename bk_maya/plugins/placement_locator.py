@@ -1,4 +1,4 @@
-"""BlenderKit placement locator - Maya viewport draw override.
+"""Blendkit placement locator - Maya viewport draw override.
 
 A custom `MPxLocatorNode` whose `MPxDrawOverride` renders the drag-to-place
 visualisation directly with `MUIDrawManager`.
@@ -539,7 +539,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         downloading = dl_state == 1
 
         if downloading:
-            col = om2.MColor((0.16, 0.42, 0.84, 1.0))  # BlenderKit blue — downloading
+            col = om2.MColor((0.16, 0.42, 0.84, 1.0))  # Blendkit blue — downloading
         elif has_hit and on_floor:
             col = om2.MColor((0.39, 0.78, 1.00, 1.0))  # cyan  - floor plane
         elif has_hit:
@@ -772,13 +772,21 @@ def deregister(plugin_fn: om2.MFnPlugin) -> None:
 # Standalone plug-in entry points
 # ---------------------------------------------------------------------------
 # These let Maya load this file directly via Plug-in Manager (or via
-# `cmds.loadPlugin("placement_locator")`).  The main BlenderKit plug-in
+# `cmds.loadPlugin("placement_locator")`).  The main Blendkit plug-in
 # auto-loads this file on startup and sets autoload=True so it survives
 # Maya restarts.
 
 
 def initializePlugin(plugin) -> None:
-    fn = om2.MFnPlugin(plugin, "BlenderKit", "1.0", "Any")
+    # load version info from the main Blendkit plug-in (if present) so the locator
+    # shows the same version in Plug-in Manager.  If the main plug-in isn't loaded, fall back to a generic version string.
+    try:
+        from bk_maya import _version
+
+        version = _version.__version__
+    except Exception:
+        version = "1.0"
+    fn = om2.MFnPlugin(plugin, "Blendkit", version, "Any")
     register(fn)
 
 

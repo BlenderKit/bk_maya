@@ -78,7 +78,7 @@ ignore = [
     "TRY400",   # error-instead-of-exception
     "TRY401",   # verbose-log-message
     "PERF203",  # try-except-in-loop (defensive scene iteration)
-    "S310",     # suspicious-url-open-usage (BlenderKit API only)
+    "S310",     # suspicious-url-open-usage (Blendkit API only)
 
     # ── Maya / Qt API conventions ─────────────────────────────────────────
     "N813",     # camelcase-imported-as-lowercase (`OpenMaya as om2` is canon)

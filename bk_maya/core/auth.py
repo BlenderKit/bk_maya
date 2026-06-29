@@ -1,12 +1,12 @@
-"""OAuth2 PKCE authentication for the BlenderKit Maya plugin.
+"""OAuth2 PKCE authentication for the Blendkit Maya plugin.
 
-Mirrors the Blender addon flow: the local ``blenderkit-client`` Go process
+Mirrors the Blendkit addon flow: the local ``blenderkit-client`` Go process
 owns the OAuth callback on ``http://localhost:{port}/consumer/exchange/`` and
 delivers tokens back through ``/report`` as a ``login`` task. This module
 just generates the PKCE pair, hands the verifier to the client, opens the
 browser, and waits for the login task on a callback.
 
-Tokens are persisted to ``~/Documents/maya/blenderkit_auth.json`` so they
+Tokens are persisted to ``~/Documents/maya/blendkit_auth.json`` so they
 survive Maya restarts.
 """
 
@@ -51,7 +51,7 @@ def _token_file() -> str:
         docs = os.path.expanduser("~/Library/Preferences/Autodesk/maya")
     else:
         docs = os.path.expanduser("~/maya")
-    return os.path.join(docs, "maya", "blenderkit_auth.json")
+    return os.path.join(docs, "maya", "blendkit_auth.json")
 
 
 _tokens: dict[str, Any] = {}
@@ -145,7 +145,7 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
         _invalidate_user_id()
         # Eagerly fetch the profile so "My assets only" works on first use.
         fetch_profile()
-        log.info("BlenderKit tokens received from client.")
+        log.info("Blendkit tokens received from client.")
     else:
         _login_error = message or "Login failed"
         log.error("Login task failed: %s", _login_error)
@@ -307,7 +307,7 @@ def login(timeout: float = 180.0) -> bool:
 
     _login_event.clear()
     _login_error = ""
-    log.info("Opening browser for BlenderKit login (callback on port %s)…", port)
+    log.info("Opening browser for Blendkit login (callback on port %s)…", port)
     webbrowser.open_new_tab(auth_url)
 
     if not _login_event.wait(timeout=timeout):

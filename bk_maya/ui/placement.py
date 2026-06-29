@@ -1,4 +1,4 @@
-"""BlenderKit Maya - drag-to-place asset system.
+"""Blendkit Maya - drag-to-place asset system.
 
 Architecture
 ============
@@ -291,7 +291,7 @@ def _meters_to_internal() -> float:
 class _State:
     asset_data: dict[str, Any] = field(default_factory=dict)
     thumb_path: str = ""
-    # bbox in object-local space (matches BlenderKit API bbox_min/bbox_max)
+    # bbox in object-local space (matches Blendkit API bbox_min/bbox_max)
     bbox_min: tuple[float, float, float] = (-0.5, 0.0, -0.5)
     bbox_max: tuple[float, float, float] = (0.5, 1.0, 0.5)
     # current world placement
@@ -328,7 +328,7 @@ _active_state: _State = _State()
 
 
 def _is_material_asset(asset_data: dict[str, Any]) -> bool:
-    """Return True when *asset_data* is a BlenderKit material asset.
+    """Return True when *asset_data* is a Blendkit material asset.
 
     Material assets are applied directly to an existing mesh under the
     cursor instead of being placed with a bounding-box helper.
@@ -337,7 +337,7 @@ def _is_material_asset(asset_data: dict[str, Any]) -> bool:
 
 
 def _is_hdri_asset(asset_data: dict[str, Any]) -> bool:
-    """Return True when *asset_data* is a BlenderKit HDRI asset.
+    """Return True when *asset_data* is a Blendkit HDRI asset.
 
     HDRIs are dropped anywhere in the viewport and turned into an
     environment / dome light instead of placed as geometry.
@@ -724,7 +724,7 @@ def _load_proxor_payload(asset_data: dict[str, Any]) -> dict[str, Any]:
     try:
         from bk_maya.core import global_vars as gv  # type: ignore
 
-        for attr in ("CACHE_DIR", "PROXOR_DIR", "BLENDERKIT_DATA_DIR"):
+        for attr in ("CACHE_DIR", "PROXOR_DIR", "BLENDKIT_DATA_DIR"):
             p = getattr(gv, attr, None)
             if p:
                 candidates.append(os.path.join(str(p), "proxors", f"{asset_base_id}.prxc"))
@@ -1019,7 +1019,7 @@ class DragSession(QObject):  # type: ignore
             # HDRIs are world-level environment lights — no locator, no mesh
             # target. Only the cursor-following badge is shown.
             self._delay_locator = False
-        # BlenderKit API returns bbox in meters; Maya internal unit is cm.
+        # Blendkit API returns bbox in meters; Maya internal unit is cm.
         scale = _meters_to_internal()
 
         def _coerce_bbox(v, default):
@@ -1041,7 +1041,7 @@ class DragSession(QObject):  # type: ignore
         default_min = (-0.5 * scale, 0.0, -0.5 * scale)
         default_max = (0.5 * scale, 1.0 * scale, 0.5 * scale)
 
-        # The BlenderKit search endpoint returns the bbox split across six
+        # The Blendkit search endpoint returns the bbox split across six
         # scalar params under ``dictParameters`` — ``boundBoxMinX/Y/Z`` and
         # ``boundBoxMaxX/Y/Z`` (all in meters, Blender Z-up).  The Blender
         # add-on folds those into top-level ``bbox_min`` / ``bbox_max``
@@ -1066,7 +1066,7 @@ class DragSession(QObject):  # type: ignore
         bbox_min = _coerce_bbox(raw_min, default_min)
         bbox_max = _coerce_bbox(raw_max, default_max)
 
-        # Maya is Y-up; BlenderKit/Blender is Z-up. Swap Y/Z so the asset's
+        # Maya is Y-up; Blendkit/Blender is Z-up. Swap Y/Z so the asset's
         # "up" axis points up in Maya, then re-order min/max per-axis.
         sw_min = (bbox_min[0], bbox_min[2], bbox_min[1])
         sw_max = (bbox_max[0], bbox_max[2], bbox_max[1])
@@ -1103,7 +1103,7 @@ class DragSession(QObject):  # type: ignore
             self._locator_name = None if delay_locator else _create_locator()
             if self._locator_name is None and not delay_locator:
                 log.warning(
-                    "bkPlacementLocator node type not registered - load the BlenderKit plugin via Plug-in Manager."
+                    "bkPlacementLocator node type not registered - load the Blendkit plugin via Plug-in Manager."
                 )
             elif self._locator_name is not None:
                 self._publish_bbox_to_locator()
