@@ -344,9 +344,7 @@ class AssetDetailDialog(QDialog):
         slug = asset.get("slug", "") or asset_id
         if slug:
             view_btn = QPushButton("View on Blendkit.com")
-            view_btn.clicked.connect(
-                lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/")
-            )
+            view_btn.clicked.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
             btn_row.addWidget(view_btn)
 
         close_btn = QPushButton("Close")
@@ -657,9 +655,7 @@ class AssetTile(QFrame):
         slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
         if slug:
             web_act = QAction("View on Blendkit.com", menu)
-            web_act.triggered.connect(
-                lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/")
-            )
+            web_act.triggered.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
             menu.addAction(web_act)
 
         menu.exec(event.globalPos())
