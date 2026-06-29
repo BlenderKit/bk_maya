@@ -6,8 +6,10 @@ delivers tokens back through ``/report`` as a ``login`` task. This module
 just generates the PKCE pair, hands the verifier to the client, opens the
 browser, and waits for the login task on a callback.
 
-Tokens are persisted to ``~/Documents/maya/blendkit_auth.json`` so they
-survive Maya restarts.
+Tokens are persisted in the OS credential vault (Windows Credential Manager,
+macOS Keychain, or Linux Secret Service) via :mod:`bk_maya.core.secret_store`,
+falling back to a permission-restricted file only where no vault is available.
+They survive Maya restarts.
 """
 
 from __future__ import annotations
@@ -28,19 +30,23 @@ from collections.abc import Callable
 from typing import Any
 
 from ..api import client as api
-from . import client_lib
+from . import client_lib, secret_store
 
 log = logging.getLogger(__name__)
 
 # How early before expiry to start considering a token stale (seconds).
 _REFRESH_RESERVE = 3 * 24 * 3600  # 3 days, mirrors Blender addon
 
+# Name under which the token bundle is stored in the OS credential vault.
+_SECRET_NAME = "tokens"  # noqa: S105 - a vault key name, not a credential
+
 # -------------------------------------------------------------------------
 # Token storage
 # -------------------------------------------------------------------------
 
 
-def _token_file() -> str:
+def _legacy_token_file() -> str:
+    """Path of the pre-vault plaintext token file (migrated then deleted)."""
     if sys.platform == "win32":
         import ctypes
 
@@ -54,6 +60,29 @@ def _token_file() -> str:
     return os.path.join(docs, "maya", "blendkit_auth.json")
 
 
+def _migrate_legacy_file() -> dict[str, Any]:
+    """Import tokens from the old plaintext file into the secure vault, once.
+
+    Returns the migrated token dict (possibly empty). The plaintext file is
+    deleted after a successful import so the secret no longer lives on disk.
+    """
+    path = _legacy_token_file()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tokens = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(tokens, dict) or not tokens.get("access_token"):
+        return {}
+    if secret_store.set_secret(_SECRET_NAME, json.dumps(tokens)):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        log.info("Migrated Blendkit tokens from plaintext file into the OS credential vault.")
+    return tokens
+
+
 _tokens: dict[str, Any] = {}
 _tokens_lock = threading.Lock()
 
@@ -63,11 +92,16 @@ def _load_tokens() -> dict[str, Any]:
     with _tokens_lock:
         if _tokens:
             return dict(_tokens)
-        try:
-            with open(_token_file(), encoding="utf-8") as fh:
-                _tokens = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            _tokens = {}
+        raw = secret_store.get_secret(_SECRET_NAME)
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                _tokens = loaded if isinstance(loaded, dict) else {}
+            except json.JSONDecodeError:
+                _tokens = {}
+        else:
+            # First run after upgrade: pull any tokens from the old file.
+            _tokens = _migrate_legacy_file()
         return dict(_tokens)
 
 
@@ -75,18 +109,17 @@ def _save_tokens(tokens: dict[str, Any]) -> None:
     global _tokens
     with _tokens_lock:
         _tokens = dict(tokens)
-        path = _token_file()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(_tokens, fh, indent=2)
+        secret_store.set_secret(_SECRET_NAME, json.dumps(_tokens))
 
 
 def _clear_tokens() -> None:
     global _tokens
     with _tokens_lock:
         _tokens = {}
+        secret_store.delete_secret(_SECRET_NAME)
+        # Best-effort: also remove any leftover legacy plaintext file.
         try:
-            os.remove(_token_file())
+            os.remove(_legacy_token_file())
         except OSError:
             pass
 
