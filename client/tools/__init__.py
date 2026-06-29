@@ -1,1 +1,1 @@
-"""Tools package for BlenderKit Maya client."""
+"""Tools package for Blendkit Maya client."""

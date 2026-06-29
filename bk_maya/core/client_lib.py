@@ -1,12 +1,12 @@
-"""BlenderKit-Client process integration.
+"""Blendkit-Client process integration.
 
-Mirrors the architecture used by the Blender addon's ``client_lib.py``:
-the addon never talks to ``blenderkit.com`` directly for search /
+Mirrors the architecture used by the Blendkit addon's ``client_lib.py``:
+the addon never talks to ``blendkit.com`` directly for search /
 thumbnail / download work.  Instead it spawns a local Go process
 (``blenderkit-client``) and talks to it over loopback HTTP.
 
 The client:
-  * fetches search results from the BlenderKit API,
+  * fetches search results from the Blendkit API,
   * downloads all thumbnails (rate-limited, 6 concurrent),
   * writes them into a caller-supplied ``tempdir``,
   * reports task progress through a polling ``/report`` endpoint.
@@ -179,7 +179,7 @@ def _sources_newer_than(binary_path: str) -> bool:
 
 
 def _maybe_dev_build() -> None:
-    """If ``BLENDERKIT_DEV=1``, rebuild the in-addon binary from source
+    """If ``BLENDKIT_DEV=1``, rebuild the in-addon binary from source
     when any ``.go`` / ``go.mod`` / ``go.sum`` file is newer than it.
 
     Mirrors what ``bk_maya/dev.py build`` does, but only for the current
@@ -187,7 +187,7 @@ def _maybe_dev_build() -> None:
     binary under ``client/vX.Y.Z/<name>`` so the normal install/copy path
     picks it up.
     """
-    if os.environ.get("BLENDERKIT_DEV", "0") != "1":
+    if os.environ.get("BLENDKIT_DEV", "0") != "1":
         return
 
     binary_path = _inplace_binary_path()
@@ -207,7 +207,7 @@ def _maybe_dev_build() -> None:
     ldflags = f"-X main.ClientVersion={version}"
 
     os.makedirs(os.path.dirname(binary_path), exist_ok=True)
-    log.info("BLENDERKIT_DEV=1: building client (%s/%s) → %s", goos, goarch, binary_path)
+    log.info("BLENDKIT_DEV=1: building client (%s/%s) → %s", goos, goarch, binary_path)
     try:
         proc = subprocess.run(  # noqa: PLW1510
             ["go", "build", "-o", binary_path, "-ldflags", ldflags, "."],
@@ -217,7 +217,7 @@ def _maybe_dev_build() -> None:
             text=True,
         )
     except FileNotFoundError:
-        log.error("BLENDERKIT_DEV=1 but `go` is not on PATH; skipping rebuild.")
+        log.error("BLENDKIT_DEV=1 but `go` is not on PATH; skipping rebuild.")
         return
     if proc.returncode != 0:
         log.error("Client build failed (rc=%s):\n%s", proc.returncode, proc.stderr)
@@ -245,7 +245,7 @@ def _ensure_client_binary_installed() -> str:
 
     src = _inplace_binary_path()
     if not os.path.isfile(src):
-        raise FileNotFoundError(f"BlenderKit client binary not found at {src}. Run bk_maya/dev.py to build it.")
+        raise FileNotFoundError(f"Blendkit client binary not found at {src}. Run bk_maya/dev.py to build it.")
 
     if _use_inplace_client:
         return src
@@ -257,7 +257,7 @@ def _ensure_client_binary_installed() -> str:
             shutil.copy2(src, dst)
             if sys.platform != "win32":
                 os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
-            log.info("Installed BlenderKit client to %s", dst)
+            log.info("Installed Blendkit client to %s", dst)
         return dst
     except OSError as exc:
         log.warning(
@@ -379,7 +379,7 @@ def _spawn(port: str) -> subprocess.Popen:
         "--pid",
         str(_app_id),
     ]
-    log.info("Spawning BlenderKit client: %s", " ".join(args))
+    log.info("Spawning Blendkit client: %s", " ".join(args))
     proc = subprocess.Popen(
         args,
         stdout=log_file,
@@ -387,7 +387,7 @@ def _spawn(port: str) -> subprocess.Popen:
         creationflags=creation_flags,
         close_fds=(sys.platform != "win32"),
     )
-    log.info("BlenderKit client PID %s on port %s", proc.pid, port)
+    log.info("Blendkit client PID %s on port %s", proc.pid, port)
     return proc
 
 
@@ -418,7 +418,7 @@ def ensure_running(timeout: float = 8.0) -> str:
             return port
         time.sleep(0.15)
 
-    raise RuntimeError(f"BlenderKit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
+    raise RuntimeError(f"Blendkit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
 
 
 def shutdown() -> None:

@@ -1,7 +1,7 @@
-"""BlenderKit Settings dialog for Maya.
+"""Blendkit Settings dialog for Maya.
 
 A tabbed QDialog mirroring the options available in Blender's N-panel /
-addon preferences.  Open it via the BlenderKit top menu → Settings…
+addon preferences.  Open it via the Blendkit top menu → Settings…
 
 Tabs
 ----
@@ -455,7 +455,7 @@ class _AccountTab(QWidget):
         layout.addWidget(
             _note(
                 "The API key is filled automatically on login. "
-                "You can also paste a key from your profile on blenderkit.com.",
+                "You can also paste a key from your profile on blendkit.com.",
             ),
         )
 
@@ -537,11 +537,11 @@ _dialog_instance: SettingsDialog | None = None
 
 
 class SettingsDialog(QDialog):
-    """Main settings dialog for the BlenderKit Maya client."""
+    """Main settings dialog for the Blendkit Maya client."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("BlenderKit — Settings")
+        self.setWindowTitle("Blendkit — Settings")
         self.setMinimumSize(520, 480)
         self.setModal(False)
 

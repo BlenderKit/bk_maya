@@ -1,14 +1,22 @@
 <div align="center">
-  <img src="/bk_maya/data/icons/blenderkit_logo.png" alt="Logo" width="100" height="100"/>
-  <h3 align="center">BlenderKit for Maya</h3>
+  <img src="/bk_maya/data/icons/blendkit_logo.png" alt="Logo" width="100" height="100"/>
+  <h3 align="center">Blendkit for Maya</h3>
 
   Asset search, download and drag&drop directly inside Autodesk Maya.
 
+  ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/blenderkit/bk_maya/total?color=blue)
+  ![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/blenderkit/bk_maya/latest/total?color=blue)
+  [![GitHub Release](https://img.shields.io/github/v/release/blenderkit/bk_maya?color=green)](https://github.com/BlenderKit/bk_maya/releases/latest)
   [![Project license](https://img.shields.io/github/license/blenderkit/bk_maya.svg?color=orange)](LICENSE)
+  </br>
+  ![GitHub commit activity](https://img.shields.io/github/commit-activity/y/blenderkit/bk_maya?color=blue)
+  ![GitHub branch check runs](https://img.shields.io/github/check-runs/blenderkit/bk_maya/main?color=green)
+
 </div>
 
+
 > **Status:** early development / **alpha**. Automated releases are now
-> published to [GitHub Releases](https://github.com/BlenderKit/blenderkit_maya/releases):
+> published to [GitHub Releases](https://github.com/BlenderKit/bk_maya/releases):
 > every merge to `main` produces a rolling **Alpha** prerelease, and `master`
 > (or the manual *Run workflow* button) produces a regular release. The zip is
 > self-contained — unzip into a Maya `modules` directory and restart Maya, no
@@ -16,7 +24,7 @@
 > `python bk_maya/dev.py build`.
 
 ## About
-The BlenderKit Maya plugin connects Autodesk Maya to the [BlenderKit service](https://www.blenderkit.com/) — search the library, drag&drop assets straight into the viewport, and re-use the same account / Full plan you already have for the Blender add-on.
+The Blendkit Maya plugin connects Autodesk Maya to the [Blendkit service](https://www.blendkit.com/) — search the library, drag&drop assets straight into the viewport, and re-use the same account / Full plan you already have for the Blender add-on.
 
 It is a port of the official Blender add-on built on:
 
@@ -67,14 +75,14 @@ and load `maya_plugin.py` from `Windows ▸ Settings/Preferences ▸ Plug-in Man
 - **Where the version lives at runtime:** the build writes a generated
   `bk_maya/_build_version.py` into the package. The plugin reads it via
   [bk_maya/_version.py](bk_maya/_version.py) and surfaces it in the Plug-in
-  Manager, the **BlenderKit ▸ About** menu, and the Maya `.mod` module version —
+  Manager, the **Blendkit ▸ About** menu, and the Maya `.mod` module version —
   so users and admins can see exactly which build is installed.
 - **Automated releases** (see [.github/workflows/release.yml](.github/workflows/release.yml)):
   - merge to **`main`** → rolling **Alpha** prerelease,
   - push to **`master`** or the manual *Run workflow* button → **stable** release.
-- **Zip contents** (`blenderkit-maya-<version>.zip`): the version is in the
-  filename, and the archive holds the `blenderkit.mod` file next to the
-  `blenderkit/` module folder. Unzip **both** into a Maya `modules` directory
+- **Zip contents** (`blendkit-maya-<version>.zip`): the version is in the
+  filename, and the archive holds the `blendkit.mod` file next to the
+  `blendkit/` module folder. Unzip **both** into a Maya `modules` directory
   and restart Maya — see the bundled `INSTALL.txt`.
 - **Build channels locally:**
 
@@ -88,7 +96,7 @@ and load `maya_plugin.py` from `Windows ▸ Settings/Preferences ▸ Plug-in Man
 > **Client binaries (future change):** today the Go client is compiled from
 > `client/` on every build. When it moves to its own repo and ships *signed*
 > binaries, point the build at the downloaded folder with
-> `--client-build <folder>` (or the `BLENDERKIT_CLIENT_BINARIES` env-var) — see
+> `--client-build <folder>` (or the `BLENDKIT_CLIENT_BINARIES` env-var) — see
 > the comments in [bk_maya/dev.py](bk_maya/dev.py). No other packaging changes
 > are needed.
 
@@ -106,10 +114,10 @@ and load `maya_plugin.py` from `Windows ▸ Settings/Preferences ▸ Plug-in Man
 All checks are also wired up as a [pre-commit](https://pre-commit.com) hook — see [.pre-commit-config.yaml](.pre-commit-config.yaml).
 
 ## How to contribute
-- Share the word about BlenderKit with your friends and colleagues, or on social media.
-- [Become a Creator](https://www.blenderkit.com/become-creator/) and upload your assets to the BlenderKit Free or Full Plan database.
+- Share the word about Blendkit with your friends and colleagues, or on social media.
+- [Become a Creator](https://www.blendkit.com/become-creator/) and upload your assets to the Blendkit Free or Full Plan database.
 - Report a bug or request a feature in the [issue tracker](https://github.com/BlenderKit/bk_maya/issues).
 - Contribute code — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
-[GPL-3.0](LICENSE). Same licence as the upstream Blender add-on.
+[GPL-3.0](LICENSE). Same license as the upstream Blender add-on.

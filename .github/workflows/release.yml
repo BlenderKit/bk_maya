@@ -15,7 +15,7 @@ name: Release
 # FUTURE — external signed client repo:
 #   When the Go client moves to its own repo and ships *signed* binaries, add a
 #   step that downloads them into a folder and pass `--client-build <folder>`
-#   (or set the BLENDERKIT_CLIENT_BINARIES env-var) to the build command below.
+#   (or set the BLENDKIT_CLIENT_BINARIES env-var) to the build command below.
 #   `dev.py` already branches on that path, so this is the only change needed.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -88,12 +88,12 @@ jobs:
       - name: Name the artifact
         id: artifact
         run: |
-          BUILT="out/blenderkit-maya-${{ steps.version.outputs.version }}.zip"
+          BUILT="out/blendkit-maya-${{ steps.version.outputs.version }}.zip"
           if [ "${{ steps.channel.outputs.channel }}" = "alpha" ]; then
             # Stable filename so the rolling alpha release always overwrites it.
-            NAME="blenderkit-maya-alpha.zip"
+            NAME="blendkit-maya-alpha.zip"
           else
-            NAME="blenderkit-maya-${{ steps.version.outputs.version }}.zip"
+            NAME="blendkit-maya-${{ steps.version.outputs.version }}.zip"
           fi
           cp "$BUILT" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
@@ -128,10 +128,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.version.outputs.version }}"
-          name: "BlenderKit for Maya ${{ steps.version.outputs.version }}"
+          name: "Blendkit-maya ${{ steps.version.outputs.version }}"
           prerelease: false
           body: |
-            BlenderKit for Maya **${{ steps.version.outputs.version }}**.
+            Blendkit-maya **${{ steps.version.outputs.version }}**.
 
             - Commit: ${{ github.sha }}
 

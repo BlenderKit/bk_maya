@@ -1,4 +1,4 @@
-"""BlenderKit asset bar — PySide6 side panel for Maya.
+"""Blendkit asset bar — PySide6 side panel for Maya.
 
 Entry point: ``open_asset_bar()``
 
@@ -58,10 +58,7 @@ from ..core.prefs import prefs
 
 log = logging.getLogger(__name__)
 
-# NOTE: Bumped from "BlenderKitAssetBar" so old workspaceControl state
-# (created without ``retain``/``closeCommand``) from prior sessions is
-# bypassed and the close-protection flags below actually take effect.
-CONTROL_NAME = "BlenderKitAssetBarV2"
+CONTROL_NAME = "BlendkitAssetBar"
 GRID_SPACING = 6
 PAGE_SIZE = 24
 
@@ -75,6 +72,21 @@ ASSET_TYPES = [
 
 # Assigned in _populate_workspace_control()
 _current_bar: AssetBarWidget | None = None
+
+
+def _on_login_state_changed() -> None:
+    """Login listener (registered once at import): refresh the live panel.
+
+    Called by ``auth`` on the poller thread after a fresh login; marshals onto
+    the Qt GUI thread to hide the login banner and re-run the active search.
+    """
+    bar = _current_bar
+    if bar is None:
+        return
+    QTimer.singleShot(0, bar.on_logged_in)
+
+
+auth.add_login_listener(_on_login_state_changed)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +139,7 @@ class _SmoothScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Report poller  — pulls task updates from the local blenderkit-client
+# Report poller  — pulls task updates from the local blendkit-client
 # ---------------------------------------------------------------------------
 #
 # Search results and thumbnail file paths are delivered as ``search`` and
@@ -246,7 +258,7 @@ class AssetDetailDialog(QDialog):
         _row("License", _license_label(asset))
         _row("Downloads", str(asset.get("downloadCount") or ""))
 
-        # Average rating (BlenderKit returns ``ratingsAverage`` as dict
+        # Average rating (Blendkit returns ``ratingsAverage`` as dict
         # ``{"quality": x, "working_hours": y}`` and ``ratingsCount`` similarly).
         rat_avg = asset.get("ratingsAverage") or {}
         rat_cnt = asset.get("ratingsCount") or {}
@@ -258,7 +270,7 @@ class AssetDetailDialog(QDialog):
         if avg_q:
             try:
                 avg_f = float(avg_q)
-                # BlenderKit uses a 1..10 scale (same as the Blender addon).
+                # Blendkit-maya uses a 1..10 scale (same as the Blendkit-blender addon).
                 filled = max(0, min(10, int(round(avg_f))))  # noqa: RUF046
                 stars = "★" * filled + "☆" * (10 - filled)
                 _row("Rating", f"<span style='color:#f5c33b'>{stars}</span>  {avg_f:.1f}  ({cnt_q or 0})")
@@ -331,10 +343,8 @@ class AssetDetailDialog(QDialog):
 
         slug = asset.get("slug", "") or asset_id
         if slug:
-            view_btn = QPushButton("View on BlenderKit.com")
-            view_btn.clicked.connect(
-                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
-            )
+            view_btn = QPushButton("View on Blendkit.com")
+            view_btn.clicked.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
             btn_row.addWidget(view_btn)
 
         close_btn = QPushButton("Close")
@@ -644,10 +654,8 @@ class AssetTile(QFrame):
 
         slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
         if slug:
-            web_act = QAction("View on BlenderKit.com", menu)
-            web_act.triggered.connect(
-                lambda: webbrowser.open(f"https://www.blenderkit.com/asset-gallery-detail/{slug}/")
-            )
+            web_act = QAction("View on Blendkit.com", menu)
+            web_act.triggered.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
             menu.addAction(web_act)
 
         menu.exec(event.globalPos())
@@ -1211,7 +1219,7 @@ class SearchBar(QWidget):
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Search BlenderKit assets…")
+        self._input.setPlaceholderText("Search Blendkit assets…")
         self._input.returnPressed.connect(self._emit)
         input_row.addWidget(self._input)
         btn = QPushButton("Search")
@@ -1815,7 +1823,7 @@ class _LoginBanner(QWidget):
 
 
 class _BrandHeader(QWidget):
-    """Blue title strip with the BlenderKit logo, shown at the very top of
+    """Blue title strip with the Blendkit logo, shown at the very top of
     the asset bar.  Always visible — it survives Maya redocking and floating
     the workspaceControl, so the panel keeps its identity regardless of how
     Maya chrome renders the tab.
@@ -1828,7 +1836,7 @@ class _BrandHeader(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
             "QWidget#BKBrandHeader {"
-            "  background-color: #2a6bd6;"  # BlenderKit blue
+            "  background-color: #2a6bd6;"  # Blendkit blue
             "  border-bottom: 1px solid #1d4f9e;"
             "}"
             "QLabel#BKBrandText {"
@@ -1852,7 +1860,7 @@ class _BrandHeader(QWidget):
             pass
         row.addWidget(logo)
 
-        text = QLabel("BlenderKit", self)
+        text = QLabel("Blendkit", self)
         text.setObjectName("BKBrandText")
         row.addWidget(text)
         row.addStretch()
@@ -1861,7 +1869,7 @@ class _BrandHeader(QWidget):
 class AssetBarWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("BlenderKit")
+        self.setWindowTitle("Blendkit")
         self.setMinimumWidth(260)
 
         layout = QVBoxLayout(self)
@@ -1920,6 +1928,16 @@ class AssetBarWidget(QWidget):
             self._login_banner.show_info()
             self._login_banner.setVisible(True)
 
+    def on_logged_in(self) -> None:
+        """React to a fresh login (banner away + refresh content).
+
+        Invoked on the GUI thread via the module-level login listener. Hides
+        the login banner and re-runs the active search so the grid reflects the
+        now logged-in state (e.g. enables personalised/"My assets" results).
+        """
+        self._refresh_login_state()
+        self._on_filters_changed()
+
     def _do_login(self) -> None:
         self._login_banner.set_busy(True, "Waiting for browser…")
 
@@ -1938,6 +1956,7 @@ class AssetBarWidget(QWidget):
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_login_result(self, ok: bool, err: str) -> None:
+        log.info("Login result: %s, err=%s", ok, err)
         if ok:
             self._refresh_login_state()
             return
@@ -2086,7 +2105,7 @@ class AssetBarWidget(QWidget):
 
 
 def open_asset_bar() -> None:
-    """Create or restore the BlenderKit side panel (docked by default)."""
+    """Create or restore the Blendkit side panel (docked by default)."""
     if cmds.workspaceControl(CONTROL_NAME, query=True, exists=True):
         cmds.workspaceControl(
             CONTROL_NAME,
@@ -2107,7 +2126,7 @@ def open_asset_bar() -> None:
 
     # Allow the panel to be closed via the X button or panel close.
     kw = {
-        "label": "BlenderKit",
+        "label": "Blendkit",
         "uiScript": ("import bk_maya.ui.asset_bar as _ab; _ab._populate_workspace_control()"),
         "initialWidth": 340,
         "retain": True,
@@ -2122,7 +2141,14 @@ def open_asset_bar() -> None:
         kw["floating"] = True
 
     cmds.workspaceControl(CONTROL_NAME, **kw)
-    log.info("BlenderKit asset bar opened.")
+    # Raise/focus the freshly created control so it becomes the active tab
+    # (without this, a new control docked next to the AttributeEditor stays
+    # behind whatever tab was previously on top).
+    try:
+        cmds.workspaceControl(CONTROL_NAME, edit=True, restore=True, visible=True)
+    except Exception as exc:
+        log.debug("Could not raise new asset bar control: %s", exc)
+    log.info("Blendkit asset bar opened.")
 
 
 def set_tile_size(size: int) -> None:

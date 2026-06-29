@@ -16,3 +16,16 @@ repos:
     hooks:
       - id: bandit
         args: ["-c", "_bandit.yaml", "-ll"]
+
+  # Go formatting — mirrors the CI "Go format check" (gofmt -l ./client).
+  # Uses `gofmt -w` so staged Go files are auto-formatted; pre-commit then
+  # blocks the commit if any file was modified, prompting a re-stage.
+  # Requires the Go toolchain on PATH (needed to build the client anyway).
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt (client)
+        entry: gofmt -w
+        language: system
+        files: ^client/.*\.go$
+        types: [go]

@@ -12,7 +12,7 @@
 //
 // Caller picks a recipe via:
 //   - script_id   : looks up <exe_dir>/tools/<id>.py (set
-//                   $BLENDERKIT_TOOLS_DIR to override). Use this for
+//                   $BLENDKIT_TOOLS_DIR to override). Use this for
 //                   stable recipes shipped with the binary.
 //   - script_path : absolute path to a caller-supplied script. Escape
 //                   hatch for embedder-specific work.
@@ -100,11 +100,11 @@ func runBlenderScriptHandler(w http.ResponseWriter, r *http.Request) {
 
 // resolveBundledScript maps a script_id to an absolute file path.
 // Lookup order:
-//  1. $BLENDERKIT_TOOLS_DIR/<id>.py   - explicit override (dev)
+//  1. $BLENDKIT_TOOLS_DIR/<id>.py   - explicit override (dev)
 //  2. <exe_dir>/tools/<id>.py         - production layout
 //  3. <cwd>/tools/<id>.py             - `go run` dev fallback
 func resolveBundledScript(id string) (string, error) {
-	if env := os.Getenv("BLENDERKIT_TOOLS_DIR"); env != "" {
+	if env := os.Getenv("BLENDKIT_TOOLS_DIR"); env != "" {
 		p := filepath.Join(env, id+".py")
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
@@ -122,7 +122,7 @@ func resolveBundledScript(id string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("script_id %q not found (looked under $BLENDERKIT_TOOLS_DIR, <exe>/tools/, <cwd>/tools/)", id)
+	return "", fmt.Errorf("script_id %q not found (looked under $BLENDKIT_TOOLS_DIR, <exe>/tools/, <cwd>/tools/)", id)
 }
 
 func doRunBlenderScript(data RunBlenderScriptData, taskID string) {
@@ -185,7 +185,7 @@ func doRunBlenderScript(data RunBlenderScriptData, taskID string) {
 	// sys.argv[-1] (every script in tools/ follows this convention).
 	var paramsPath string
 	if data.Params != nil {
-		f, err := os.CreateTemp("", "blenderkit_params_*.json")
+		f, err := os.CreateTemp("", "blendkit_params_*.json")
 		if err != nil {
 			TaskErrorCh <- &TaskError{AppID: data.AppID, TaskID: taskID,
 				Error: fmt.Errorf("creating params tempfile: %w", err)}

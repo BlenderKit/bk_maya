@@ -1,4 +1,4 @@
-"""Icon registry for the BlenderKit Maya plugin.
+"""Icon registry for the Blendkit Maya plugin.
 
 Loads ``bk_maya/data/icons/*.png`` and ``*.jpg`` as ``QPixmap`` objects on
 first access and caches them for the session.  The same icon set is used
@@ -8,7 +8,7 @@ Usage::
 
     from bk_maya.core.icons import icon, icon_path
 
-    pix: QPixmap = icon("blenderkit_logo")   # 'blenderkit_logo.png'
+    pix: QPixmap = icon("blendkit_logo")   # 'blendkit_logo.png'
     pix = icon("thumbnail_notready", ext="jpg")
     path: str    = icon_path("free_plan")
 """
@@ -47,7 +47,7 @@ def icon_path(name: str, ext: str = "png") -> str:
     """Return the absolute filesystem path for icon *name*.
 
     ``name`` should be the base filename without extension,
-    e.g. ``"blenderkit_logo"`` or ``"thumbnail_notready"``.
+    e.g. ``"blendkit_logo"`` or ``"thumbnail_notready"``.
     """
     return os.path.join(_ICON_DIR, f"{name}.{ext}")
 
@@ -103,5 +103,5 @@ def not_available_pixmap(size: int) -> QPixmap:
 
 
 def logo_pixmap(size: int = 32) -> QPixmap:
-    """Return the BlenderKit logo scaled to *size × size*."""
-    return icon("blenderkit_logo", size=size)
+    """Return the Blendkit logo scaled to *size × size*."""
+    return icon("blendkit_logo", size=size)

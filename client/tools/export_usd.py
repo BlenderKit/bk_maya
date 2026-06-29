@@ -1,7 +1,7 @@
-"""Tools/export_usd.py - bundled BlenderKit-client recipe.
+"""Tools/export_usd.py - bundled Blendkit-client recipe.
 
-Open a downloaded BlenderKit .blend, unpack its packed textures into a
-resolution-specific subfolder next to the .blend (mirroring the BlenderKit
+Open a downloaded Blendkit .blend, unpack its packed textures into a
+resolution-specific subfolder next to the .blend (mirroring the Blendkit
 Blender addon's behaviour from ``unpack_asset_bg.py``), flatten any shader
 node groups so the USD exporter can see Image Texture nodes, and export
 the whole scene to a self-contained UsdPreviewSurface .usd file.
@@ -13,7 +13,7 @@ Recipe ABI:
         out_usd        : str  (required) - destination .usd
         max_resolution : str  (optional) - "512"/"1024"/"2048"/"4096"/"8192"/"ORIGINAL"
                                           used to pick the textures subfolder
-                                          suffix (mirrors blenderkit addon)
+                                          suffix (mirrors Blendkit addon)
 
 Stdout protocol (consumed by bk_maya.core.blender_runner)::
     BK_STATUS   <stage>
@@ -89,10 +89,10 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Resolution → textures subfolder suffix (mirrors blenderkit addon paths.py)
+# Resolution → textures subfolder suffix (mirrors blendkit addon paths.py)
 # ---------------------------------------------------------------------------
 
-# Same detection tokens as blenderkit_addon/unpack_asset_bg.py::get_resolution_from_file_path
+# Same detection tokens as blendkit_addon/unpack_asset_bg.py::get_resolution_from_file_path
 _RES_FROM_PATH_TOKENS = {
     "_0_5K_": "resolution_0_5K",
     "_1K_": "resolution_1K",
@@ -105,7 +105,7 @@ _RES_FROM_PATH_TOKENS = {
 def _texture_subdir(blend_path: str) -> tuple[str, str]:
     """Return ``(rel_dir, abs_dir)`` for the textures subfolder next to *blend_path*.
 
-    Always ``//textures/`` (no resolution suffix). The BlenderKit-Maya cache
+    Always ``//textures/`` (no resolution suffix). The Blendkit-Maya cache
     is one folder per (asset, resolution), so resolution disambiguation is
     already handled at the directory level. Crucially, Blender's
     ``wm.usd_export`` MaterialX path always authors texture asset paths as
@@ -118,7 +118,7 @@ def _texture_subdir(blend_path: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Texture unpacking (mirrors blenderkit_addon/unpack_asset_bg.py::unpack_asset)
+# Texture unpacking (mirrors blendkit_addon/unpack_asset_bg.py::unpack_asset)
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +211,7 @@ def unpack_textures(blend_path: str) -> str:
 # Node group flattening
 # ---------------------------------------------------------------------------
 # Blender's wm.usd_export does NOT traverse inside material node groups.
-# Many BlenderKit assets wrap their shader in a "BlenderKit Mat" group, so
+# Many Blendkit assets wrap their shader in a "Blendkit Mat" group, so
 # any Image Texture inside would be invisible to the exporter. Flatten every
 # ShaderNodeGroup in every material before exporting.
 
@@ -853,7 +853,7 @@ def _sanitize_meshes_for_usd_export() -> None:
 def _prepare_material_asset(asset_name: str = "", asset_id: str = "") -> bool:
     """Ensure a material asset is bound to a visible mesh before export.
 
-    BlenderKit material ``.blend`` files contain the material datablock but
+    Blendkit material ``.blend`` files contain the material datablock but
     frequently have **no mesh** using it (the addon appends the material and
     assigns it to a user-picked object at import time). ``wm.usd_export`` only
     writes materials that are bound to exported geometry, so without this step
@@ -872,7 +872,7 @@ def _prepare_material_asset(asset_name: str = "", asset_id: str = "") -> bool:
         return False
 
     # Pick the asset material: prefer one marked as an asset, then match by
-    # BlenderKit id, then by name, finally fall back to the first material.
+    # Blendkit id, then by name, finally fall back to the first material.
     chosen = None
     for m in mats:
         if getattr(m, "asset_data", None) is not None:
@@ -928,9 +928,9 @@ def export_to_usd(
     Attributes:
       - blend_path: path to the source .blend file to export
       - out_usd: path to write the resulting .usd file
-      - asset_type: BlenderKit asset type ("material" gets a preview-mesh step)
+      - asset_type: Blendkit asset type ("material" gets a preview-mesh step)
       - asset_name: asset display name (used to locate the asset material)
-      - asset_id: BlenderKit asset id (used to locate the asset material)
+      - asset_id: Blendkit asset id (used to locate the asset material)
     """
     status("Opening blend")
     bpy.ops.wm.open_mainfile(filepath=blend_path)

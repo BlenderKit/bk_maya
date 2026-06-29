@@ -33,17 +33,17 @@ CHANNEL_STABLE = "stable"
 CHANNEL_ALPHA = "alpha"
 CHANNEL_DEV = "dev"
 
-# ── Client source (see blenderkit_client_build / copy_client_binaries) ────────
+# ── Client source (see blendkit_client_build / copy_client_binaries) ────────
 # TODAY the Go client lives in ./client and is compiled from source on every
 # build. SOON it will move to its own repository and ship as *signed* binaries.
 # When that happens you only need to change two things:
 #   1. point `--client-build` (or the CLIENT_BINARIES_ENV below) at the folder
 #      of downloaded signed binaries, and
-#   2. stop calling blenderkit_client_build() — do_build() already branches on
+#   2. stop calling blendkit_client_build() — do_build() already branches on
 #      `client_binaries_path` so this is a one-line switch.
 # Nothing else in the packaging pipeline needs to know where the client came
 # from. The env-var lets CI inject a path without changing the command line.
-CLIENT_BINARIES_ENV = "BLENDERKIT_CLIENT_BINARIES"
+CLIENT_BINARIES_ENV = "BLENDKIT_CLIENT_BINARIES"
 
 # Pure-Python packages to vendor into lib/.
 # Both qtpy and packaging ship as py3-none-any wheels, so a single download
@@ -105,8 +105,8 @@ def vendor_packages(lib_dir: str, packages: list[str] = VENDOR_PACKAGES) -> None
     print(f"Vendoring complete: {lib_dir}")
 
 
-def blenderkit_client_build(abs_build_dir: str):
-    """Build blenderkit-client for all platforms in parallel."""
+def blendkit_client_build(abs_build_dir: str):
+    """Build blendkit-client for all platforms in parallel."""
     with open("client/VERSION") as f:
         client_version = f.read().strip()
     build_dir = os.path.join(abs_build_dir, "client")
@@ -147,7 +147,7 @@ def blenderkit_client_build(abs_build_dir: str):
         )
         build["process"] = process
 
-    print(f"BlenderKit-Client v{client_version} build started for {len(builds)} platforms.")
+    print(f"Blendkit-Client v{client_version} build started for {len(builds)} platforms.")
     builds_ok = True
     for build in builds:
         build["process"].wait()
@@ -157,7 +157,7 @@ def blenderkit_client_build(abs_build_dir: str):
 
     if not builds_ok:
         exit(1)
-    print(f"BlenderKit-Client v{client_version} builds completed.")
+    print(f"Blendkit-Client v{client_version} builds completed.")
 
 
 def verify_client_binaries(binaries_path: str):
@@ -224,7 +224,7 @@ def verify_client_binaries(binaries_path: str):
             )
             output, error = process.communicate()
             print(f"out:{output}, err:{error}")
-            expected = "origin=Developer ID Application: BlenderKit s.r.o. (A839AY9877)"
+            expected = "origin=Developer ID Application: Blender Kit s.r.o. (A839AY9877)"
             if expected in str(output):
                 print(">>> OK notarization!")
             elif expected in str(error):
@@ -271,7 +271,7 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
         shutil.copy2(source_file, target_file)
         print(f"Copied {source_file} to {target_file}")
 
-    print(f"BlenderKit-Client binaries copied from {binaries_path} to {target_dir}")
+    print(f"Blendkit-Client binaries copied from {binaries_path} to {target_dir}")
 
 
 # ── Versioning ────────────────────────────────────────────────────────────────
@@ -347,17 +347,17 @@ def write_build_version(addon_build_dir: str, version: str, channel: str) -> Non
 # release zip is self-documenting. Edit the wording here; it is the single
 # source of truth. ``{version}`` / ``{channel}`` are filled in per build.
 INSTALL_TEXT = """\
-BlenderKit for Maya — version {version} ({channel})
+Blendkit for Maya — version {version} ({channel})
 ================================================================
 
 This package is self-contained: it bundles the Python code, all required
-third-party libraries, and the BlenderKit client binaries for every platform.
+third-party libraries, and the Blendkit client binaries for every platform.
 You do NOT need to pip-install anything or run any setup.
 
 After unzipping you have two items:
 
-    blenderkit.mod      <- the Maya module file
-    blenderkit/         <- the module folder (Python + client binaries)
+    blendkit.mod      <- the Maya module file
+    blendkit/         <- the module folder (Python + client binaries)
 
 KEEP THESE TWO TOGETHER. Copy BOTH into one of Maya's "modules" folders:
 
@@ -370,35 +370,35 @@ KEEP THESE TWO TOGETHER. Copy BOTH into one of Maya's "modules" folders:
 
 So the result looks like:
 
-  .../maya/modules/blenderkit.mod
-  .../maya/modules/blenderkit/
+  .../maya/modules/blendkit.mod
+  .../maya/modules/blendkit/
 
 Then:
 
   1. Start (or restart) Maya.
   2. Open Windows > Settings/Preferences > Plug-in Manager.
   3. Find "maya_plugin.py", tick "Loaded" (and "Auto load" to keep it on).
-  4. A "BlenderKit" menu appears in the main menu bar.
+  4. A "Blendkit" menu appears in the main menu bar.
 
-To update: replace both "blenderkit.mod" and the "blenderkit" folder with the
+To update: replace both "blendkit.mod" and the "blendkit" folder with the
 newer ones and restart Maya. The installed version is shown in the Plug-in
-Manager and under BlenderKit > About.
+Manager and under Blendkit > About.
 
-To uninstall: untick the plug-in, then delete "blenderkit.mod" and the
-"blenderkit" folder from the modules directory.
+To uninstall: untick the plug-in, then delete "blendkit.mod" and the
+"blendkit" folder from the modules directory.
 
-Questions / bugs: https://github.com/BlenderKit/blenderkit_maya/issues
+Questions / bugs: https://github.com/BlenderKit/bk_maya/issues
 """
 
 
 def write_install_text(stage_dir: str, version: str, channel: str) -> None:
     """Write ``INSTALL.txt`` (and a copy inside the module folder) at build time."""
     text = INSTALL_TEXT.format(version=version, channel=channel)
-    # Top-level next to blenderkit.mod — the first thing a user sees in the zip.
+    # Top-level next to blendkit.mod — the first thing a user sees in the zip.
     with open(os.path.join(stage_dir, "INSTALL.txt"), "w", encoding="utf-8") as fh:
         fh.write(text)
     # Also inside the module folder so it travels with an installed copy.
-    with open(os.path.join(stage_dir, "blenderkit", "INSTALL.txt"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(stage_dir, "blendkit", "INSTALL.txt"), "w", encoding="utf-8") as fh:
         fh.write(text)
     print("Wrote INSTALL.txt")
 
@@ -417,25 +417,25 @@ def do_build(
     ``bk_maya/core/client_lib.py:_addon_root``)::
 
         out/stage/
-            blenderkit.mod          # Maya module file (SIBLING of the folder)
+            blendkit.mod          # Maya module file (SIBLING of the folder)
             INSTALL.txt             # hardcoded install instructions
-            blenderkit/             # the module root
+            blendkit/             # the module root
                 bk_maya/            # python sources (incl. vendored lib/ + bk_proxor/)
                 bk_maya/_build_version.py  # generated version stamp
                 client/vX.Y.Z/      # platform client binaries
                 README.md, LICENSE, INSTALL.txt
-        out/blenderkit-maya-<version>.zip   # ships blenderkit.mod + blenderkit/
+        out/blendkit-maya-<version>.zip   # ships blendkit.mod + blendkit/
 
-    The ``.mod`` lives *next to* (not inside) the ``blenderkit/`` folder because
-    Maya resolves the module path on its ``+ blenderkit <ver> blenderkit`` line
+    The ``.mod`` lives *next to* (not inside) the ``blendkit/`` folder because
+    Maya resolves the module path on its ``+ blendkit <ver> blendkit`` line
     relative to the ``.mod`` file's own directory. Users drop BOTH items into a
     Maya ``modules`` directory.
 
-    - install_at: list of Maya ``modules`` directories. Both ``blenderkit.mod``
-      and the ``blenderkit/`` folder are copied into each location.
+    - install_at: list of Maya ``modules`` directories. Both ``blendkit.mod``
+      and the ``blendkit/`` folder are copied into each location.
     - include_tests: also copy the repo-level ``tests/`` directory into the build.
     - clean_dir: directory to wipe after building (e.g. cached client binaries
-      under the user's BlenderKit data dir).
+      under the user's Blendkit data dir).
     - client_binaries_path: use pre-signed binaries from this directory instead
       of rebuilding (``release`` command, and the future external signed-client
       repo — see CLIENT_BINARIES_ENV at the top of this file).
@@ -445,11 +445,11 @@ def do_build(
       ``BASE_VERSION`` + a UTC ``YYMMDDHHmm`` stamp.
     """
     full_version = compute_version(channel, version)
-    print(f"=== Building BlenderKit for Maya {full_version} (channel={channel}) ===")
+    print(f"=== Building Blendkit for Maya {full_version} (channel={channel}) ===")
 
     out_dir = os.path.abspath("out")
     stage_dir = os.path.join(out_dir, "stage")
-    addon_build_dir = os.path.join(stage_dir, "blenderkit")
+    addon_build_dir = os.path.join(stage_dir, "blendkit")
     shutil.rmtree(out_dir, True)
     os.makedirs(addon_build_dir)
 
@@ -458,7 +458,7 @@ def do_build(
     vendor_packages(_LIB_DIR)
 
     if client_binaries_path is None:
-        blenderkit_client_build(addon_build_dir)
+        blendkit_client_build(addon_build_dir)
     else:
         copy_client_binaries(client_binaries_path, addon_build_dir)
 
@@ -490,15 +490,15 @@ def do_build(
             ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"),
         )
 
-    # Write the Maya module file as a SIBLING of the blenderkit/ folder so the
+    # Write the Maya module file as a SIBLING of the blendkit/ folder so the
     # module path resolves correctly once both are dropped into a Maya modules
     # directory. The module version mirrors the plugin version (minus any
     # -alpha suffix, which Maya's .mod parser does not accept) so admins can see
     # which build is registered via Maya's module manager.
-    mod_path = os.path.join(stage_dir, "blenderkit.mod")
+    mod_path = os.path.join(stage_dir, "blendkit.mod")
     mod_version = full_version.split("-")[0]
     mod_content = (
-        f"+ blenderkit {mod_version} blenderkit\n"
+        f"+ blendkit {mod_version} blendkit\n"
         "MAYA_PLUG_IN_PATH+:= bk_maya/plugins\n"
         "PYTHONPATH+:= .\n"
         "PYTHONPATH+:= bk_maya/lib\n"
@@ -514,9 +514,9 @@ def do_build(
     # Hardcoded install instructions (top-level + inside the module folder).
     write_install_text(stage_dir, full_version, channel)
 
-    # CREATE ZIP — name carries the version; contents are blenderkit.mod +
-    # blenderkit/ at the archive root (so unzip-into-modules just works).
-    zip_base = os.path.join(out_dir, f"blenderkit-maya-{full_version}")
+    # CREATE ZIP — name carries the version; contents are blendkit.mod +
+    # blendkit/ at the archive root (so unzip-into-modules just works).
+    zip_base = os.path.join(out_dir, f"blendkit-maya-{full_version}")
     print("Creating ZIP archive.")
     zip_path = shutil.make_archive(zip_base, "zip", stage_dir)
     print(f"Wrote {zip_path}")
@@ -526,11 +526,11 @@ def do_build(
             print(f"Installing into modules dir {location}")
             os.makedirs(location, exist_ok=True)
             # Replace the module folder.
-            target_folder = os.path.join(location, "blenderkit")
+            target_folder = os.path.join(location, "blendkit")
             shutil.rmtree(target_folder, ignore_errors=True)
             shutil.copytree(addon_build_dir, target_folder)
             # Replace the .mod file.
-            shutil.copy2(mod_path, os.path.join(location, "blenderkit.mod"))
+            shutil.copy2(mod_path, os.path.join(location, "blendkit.mod"))
 
     if clean_dir is not None:
         print(f"Cleaning directory {clean_dir}")
@@ -547,7 +547,7 @@ parser.add_argument(
     default="build",
     choices=["build", "release", "vendor"],
     help="""
-  BUILD   = vendor lib/, build client binaries, assemble out/blenderkit and zip it.
+  BUILD   = vendor lib/, build client binaries, assemble out/blendkit and zip it.
   RELEASE = like BUILD but uses already signed client binaries from --client-build.
   VENDOR  = (re)download pure-Python vendor packages into bk_maya/lib/.
   """,
@@ -563,7 +563,7 @@ parser.add_argument(
     "--clean-dir",
     type=str,
     default=None,
-    help="Directory to wipe after building (e.g. cached client binaries under the user's BlenderKit data dir).",
+    help="Directory to wipe after building (e.g. cached client binaries under the user's Blendkit data dir).",
 )
 parser.add_argument(
     "--client-build",

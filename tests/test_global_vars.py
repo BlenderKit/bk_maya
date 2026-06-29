@@ -10,7 +10,7 @@ class TestProductionIsSet(unittest.TestCase):
 
     def test_server_set_to_production(self):
         """Ensure the SERVER variable in global_vars is set to production."""
-        expected_server = "https://www.blenderkit.com"
+        expected_server = "https://www.blendkit.com"
         self.assertEqual(
             global_vars.SERVER,
             expected_server,

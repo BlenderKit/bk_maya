@@ -1,8 +1,8 @@
-"""Asset search for the BlenderKit Maya plugin.
+"""Asset search for the Blendkit Maya plugin.
 
 Searches are dispatched through the local ``blenderkit-client`` process
 (see ``core.client_lib``).  We POST the search URL and a tempdir; the
-client fetches results from the BlenderKit API, downloads thumbnails
+client fetches results from the Blendkit API, downloads thumbnails
 into the tempdir, and reports progress through ``/report``.
 
 This module is intentionally thin — the report poller in
@@ -150,7 +150,7 @@ def search(
     try:
         client_lib.ensure_running()
     except Exception as exc:
-        log.error("Cannot start BlenderKit client: %s", exc)
+        log.error("Cannot start Blendkit client: %s", exc)
         if on_error:
             on_error(str(exc))
         return

@@ -1,6 +1,6 @@
-"""BlenderKit REST API client.
+"""Blendkit REST API client.
 
-Talks directly to https://www.blenderkit.com/api/v1/.
+Talks directly to https://www.blendkit.com/api/v1/.
 All network calls are synchronous; callers are expected to run them on a
 worker thread so the Maya UI thread is never blocked.
 """
@@ -16,7 +16,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://www.blenderkit.com"
+BASE_URL = "https://www.blendkit.com"
 API_V1 = f"{BASE_URL}/api/v1"
 
 # -------------------------------------------------------------------------
@@ -24,7 +24,7 @@ API_V1 = f"{BASE_URL}/api/v1"
 # -------------------------------------------------------------------------
 
 _DEFAULT_HEADERS = {
-    "User-Agent": "BlenderKit-Maya/0.1",
+    "User-Agent": "Blendkit-Maya/0.1",
     "Accept": "application/json",
 }
 
@@ -173,7 +173,7 @@ def build_search_url(
     extra_params: dict[str, Any] | None = None,
     next_url: str = "",
 ) -> str:
-    """Return the full ``https://www.blenderkit.com/api/v1/search/?...`` URL.
+    """Return the full ``https://www.blendkit.com/api/v1/search/?...`` URL.
 
     When *next_url* is supplied (cursor pagination) it is returned verbatim.
     The Go client expects this URL as the ``urlquery`` field of an
@@ -241,9 +241,9 @@ def search(
     extra_params: dict[str, Any] | None = None,
     next_url: str = "",  # if set, use this cursor URL directly (pagination)
 ) -> dict[str, Any]:
-    """Search BlenderKit assets.
+    """Search Blendkit assets.
 
-    The BlenderKit API uses cursor-based pagination: each response contains
+    The Blendkit API uses cursor-based pagination: each response contains
     a ``next`` URL that must be followed for subsequent pages.  When
     *next_url* is provided (from a previous response), it is used verbatim
     and all other parameters are ignored.
@@ -281,7 +281,7 @@ def search(
     if free_first:
         effective_order = "-is_free," + effective_order
 
-    # --- Build the query string in BlenderKit's embedded format --------------
+    # --- Build the query string in Blendkit's embedded format --------------
     # Format: [user_keywords +]asset_type:X +sexualizedContent: +order:Y
     #         +filter_key:filter_value (one per extra param, matching Blender)
     # The leading '+' before each token is a literal '+' in the URL (= space

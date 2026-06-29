@@ -74,8 +74,8 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "BLENDERKIT_DEBUG":"1",
-                "BLENDERKIT_DEV":"1"
+                "BLENDKIT_DEBUG":"1",
+                "BLENDKIT_DEV":"1"
             },
             "windows": {
                 "runtimeExecutable": "C:/Program Files/Autodesk/Maya2027/bin/maya.exe",
@@ -211,37 +211,6 @@
             },
             "osx": {
                 "python": "${workspaceFolder}/.venv/bin/python",
-            }
-        },
-
-        {
-            "name": "Run test.py in Maya",
-            "type": "node",
-            "request": "launch",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "windows": {
-                "runtimeExecutable": "powershell",
-                "args": [
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-Command",
-                    "D:\\blenders\\5.1.1\\blender.exe --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
-                ]
-            },
-            "linux": {
-                "runtimeExecutable": "/bin/bash",
-                "args": [
-                    "-c",
-                    "blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit"
-                ]
-            },
-            "osx": {
-                "runtimeExecutable": "/bin/bash",
-                "args": [
-                    "-c",
-                    "/Applications/Blender.app/Contents/MacOS/Blender --background -noaudio --python-exit-code 1 --python tests/test.py -- blenderkit_dev_hl"
-                ]
             }
         },
 

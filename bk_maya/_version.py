@@ -1,4 +1,4 @@
-"""Single source of truth for the BlenderKit Maya plugin version.
+"""Single source of truth for the Blendkit Maya plugin version.
 
 Humans edit :data:`BASE_VERSION` (``major.minor``) here — that is the only
 knob you normally touch. The **full** version string is

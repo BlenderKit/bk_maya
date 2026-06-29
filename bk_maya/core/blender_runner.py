@@ -204,7 +204,7 @@ class BlenderJob(QObject):
         exe = blender_exe or find_blender_executable()
         if not exe:
             self.failed.emit(
-                "Blender executable not found. Set the path in BlenderKit → Settings → Files → Blender Executable."
+                "Blender executable not found. Set the path in Blendkit → Settings → Files → Blender Executable."
             )
             return False
         if not os.path.isfile(script_path):

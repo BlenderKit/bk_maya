@@ -1,4 +1,4 @@
-"""Global state for the BlenderKit Maya plugin.
+"""Global state for the Blendkit Maya plugin.
 
 Mirrors the structure of the Blender addon's ``global_vars.py`` but without
 any ``bpy`` dependency so it can run inside or outside Maya.
@@ -12,20 +12,20 @@ from typing import Any
 
 # ── Logging levels ────────────────────────────────────────────────────────────
 
-LOGGING_LEVEL_BLENDERKIT: int = INFO
+LOGGING_LEVEL_BLENDKIT: int = INFO
 """Log level for all ``bk_maya.*`` loggers."""
 
 LOGGING_LEVEL_IMPORTED: int = WARNING
 """Log level for third-party library loggers (urllib3, requests, …)."""
 
 # Honour the same env-var as the Blender addon so devs have a single switch.
-if os.environ.get("BLENDERKIT_DEBUG", "0") == "1":
-    LOGGING_LEVEL_BLENDERKIT = DEBUG
+if os.environ.get("BLENDKIT_DEBUG", "0") == "1":
+    LOGGING_LEVEL_BLENDKIT = DEBUG
 
 # ── Server / API ──────────────────────────────────────────────────────────────
 
-SERVER: str = os.environ.get("BLENDERKIT_SERVER", "https://www.blenderkit.com")
-"""Base URL for the BlenderKit API.  Override with BLENDERKIT_SERVER env-var."""
+SERVER: str = os.environ.get("BLENDKIT_SERVER", "https://www.blendkit.com")
+"""Base URL for the Blendkit API.  Override with BLENDKIT_SERVER env-var."""
 
 # ── Runtime state ─────────────────────────────────────────────────────────────
 

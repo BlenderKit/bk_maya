@@ -247,7 +247,7 @@ class _DownloadController:
         if not version_meets_min(version):
             v = ".".join(str(x) for x in version)
             msg = (
-                f"Blender {v} is too old. BlenderKit for Maya requires Blender "
+                f"Blender {v} is too old. Blendkit for Maya requires Blender "
                 f"{MIN_BLENDER_MAJOR}.0 or newer. Update the path in Settings → Files, "
                 "then drag the asset again."
             )
@@ -710,7 +710,7 @@ class _DownloadController:
             client_lib.ensure_running()
             base_url = client_lib.get_base_url()
         except Exception as exc:
-            msg = f"Could not reach the BlenderKit client to download the HDRI: {exc}"
+            msg = f"Could not reach the Blendkit client to download the HDRI: {exc}"
             log.error("[BK hdri] %s", msg)
             self._notify_ui(msg)
             self._cleanup()

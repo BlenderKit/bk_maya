@@ -1,13 +1,15 @@
-"""OAuth2 PKCE authentication for the BlenderKit Maya plugin.
+"""OAuth2 PKCE authentication for the Blendkit Maya plugin.
 
-Mirrors the Blender addon flow: the local ``blenderkit-client`` Go process
+Mirrors the Blendkit addon flow: the local ``blenderkit-client`` Go process
 owns the OAuth callback on ``http://localhost:{port}/consumer/exchange/`` and
 delivers tokens back through ``/report`` as a ``login`` task. This module
 just generates the PKCE pair, hands the verifier to the client, opens the
 browser, and waits for the login task on a callback.
 
-Tokens are persisted to ``~/Documents/maya/blenderkit_auth.json`` so they
-survive Maya restarts.
+Tokens are persisted in the OS credential vault (Windows Credential Manager,
+macOS Keychain, or Linux Secret Service) via :mod:`bk_maya.core.secret_store`,
+falling back to a permission-restricted file only where no vault is available.
+They survive Maya restarts.
 """
 
 from __future__ import annotations
@@ -28,19 +30,23 @@ from collections.abc import Callable
 from typing import Any
 
 from ..api import client as api
-from . import client_lib
+from . import client_lib, secret_store
 
 log = logging.getLogger(__name__)
 
 # How early before expiry to start considering a token stale (seconds).
 _REFRESH_RESERVE = 3 * 24 * 3600  # 3 days, mirrors Blender addon
 
+# Name under which the token bundle is stored in the OS credential vault.
+_SECRET_NAME = "tokens"  # noqa: S105 - a vault key name, not a credential
+
 # -------------------------------------------------------------------------
 # Token storage
 # -------------------------------------------------------------------------
 
 
-def _token_file() -> str:
+def _legacy_token_file() -> str:
+    """Path of the pre-vault plaintext token file (migrated then deleted)."""
     if sys.platform == "win32":
         import ctypes
 
@@ -51,7 +57,30 @@ def _token_file() -> str:
         docs = os.path.expanduser("~/Library/Preferences/Autodesk/maya")
     else:
         docs = os.path.expanduser("~/maya")
-    return os.path.join(docs, "maya", "blenderkit_auth.json")
+    return os.path.join(docs, "maya", "blendkit_auth.json")
+
+
+def _migrate_legacy_file() -> dict[str, Any]:
+    """Import tokens from the old plaintext file into the secure vault, once.
+
+    Returns the migrated token dict (possibly empty). The plaintext file is
+    deleted after a successful import so the secret no longer lives on disk.
+    """
+    path = _legacy_token_file()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tokens = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(tokens, dict) or not tokens.get("access_token"):
+        return {}
+    if secret_store.set_secret(_SECRET_NAME, json.dumps(tokens)):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        log.info("Migrated Blendkit tokens from plaintext file into the OS credential vault.")
+    return tokens
 
 
 _tokens: dict[str, Any] = {}
@@ -63,11 +92,16 @@ def _load_tokens() -> dict[str, Any]:
     with _tokens_lock:
         if _tokens:
             return dict(_tokens)
-        try:
-            with open(_token_file(), encoding="utf-8") as fh:
-                _tokens = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            _tokens = {}
+        raw = secret_store.get_secret(_SECRET_NAME)
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                _tokens = loaded if isinstance(loaded, dict) else {}
+            except json.JSONDecodeError:
+                _tokens = {}
+        else:
+            # First run after upgrade: pull any tokens from the old file.
+            _tokens = _migrate_legacy_file()
         return dict(_tokens)
 
 
@@ -75,18 +109,17 @@ def _save_tokens(tokens: dict[str, Any]) -> None:
     global _tokens
     with _tokens_lock:
         _tokens = dict(tokens)
-        path = _token_file()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(_tokens, fh, indent=2)
+        secret_store.set_secret(_SECRET_NAME, json.dumps(_tokens))
 
 
 def _clear_tokens() -> None:
     global _tokens
     with _tokens_lock:
         _tokens = {}
+        secret_store.delete_secret(_SECRET_NAME)
+        # Best-effort: also remove any leftover legacy plaintext file.
         try:
-            os.remove(_token_file())
+            os.remove(_legacy_token_file())
         except OSError:
             pass
 
@@ -124,6 +157,11 @@ _user_id_lock = threading.Lock()
 # Listeners notified (on the GUI/poller thread) once the profile id is cached.
 _profile_listeners: list[Callable[[], None]] = []
 
+# Listeners notified (on the GUI/poller thread) after a *fresh* login completes
+# (i.e. a transition from logged-out to logged-in, not a token refresh). Used
+# by open UI such as the asset bar to refresh itself.
+_login_listeners: list[Callable[[], None]] = []
+
 
 def _invalidate_user_id() -> None:
     global _user_id
@@ -135,6 +173,9 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
     """Callback registered with the client for every ``login`` task."""
     global _login_error, _refresh_inflight
     if status == "finished" and result.get("access_token"):
+        # Distinguish a fresh login from a routine token refresh so we only
+        # poke the UI when the logged-in state actually changes.
+        was_logged_in = is_logged_in()
         tokens = {
             "access_token": result["access_token"],
             "refresh_token": result.get("refresh_token", ""),
@@ -145,7 +186,10 @@ def _on_login_task(result: dict[str, Any], status: str, message: str) -> None:
         _invalidate_user_id()
         # Eagerly fetch the profile so "My assets only" works on first use.
         fetch_profile()
-        log.info("BlenderKit tokens received from client.")
+        # Trigger the asset bar (and any other UI) to refresh on fresh login.
+        if not was_logged_in:
+            _notify_login_listeners()
+        log.info("Blendkit tokens received from client.")
     else:
         _login_error = message or "Login failed"
         log.error("Login task failed: %s", _login_error)
@@ -207,6 +251,30 @@ def add_profile_listener(cb: Callable[[], None]) -> None:
     """
     if cb not in _profile_listeners:
         _profile_listeners.append(cb)
+
+
+def add_login_listener(cb: Callable[[], None]) -> None:
+    """Register *cb* to run (on the poller thread) after a fresh login
+    completes, so open UI (e.g. the asset bar) can refresh itself.
+    """
+    if cb not in _login_listeners:
+        _login_listeners.append(cb)
+
+
+def remove_login_listener(cb: Callable[[], None]) -> None:
+    """Unregister a callback previously added with :func:`add_login_listener`."""
+    try:
+        _login_listeners.remove(cb)
+    except ValueError:
+        pass
+
+
+def _notify_login_listeners() -> None:
+    for cb in tuple(_login_listeners):
+        try:
+            cb()
+        except Exception:
+            log.exception("Login listener raised")
 
 
 def fetch_profile() -> None:
@@ -307,7 +375,7 @@ def login(timeout: float = 180.0) -> bool:
 
     _login_event.clear()
     _login_error = ""
-    log.info("Opening browser for BlenderKit login (callback on port %s)…", port)
+    log.info("Opening browser for Blendkit login (callback on port %s)…", port)
     webbrowser.open_new_tab(auth_url)
 
     if not _login_event.wait(timeout=timeout):

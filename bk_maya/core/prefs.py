@@ -1,9 +1,9 @@
-r"""BlenderKit Maya preferences — load, save, and access plugin settings.
+r"""Blendkit Maya preferences — load, save, and access plugin settings.
 
 Preferences are stored as JSON at:
-  Windows : %USERPROFILE%\\Documents\\maya\\blenderkit_prefs.json
-  macOS   : ~/Library/Preferences/Autodesk/maya/blenderkit_prefs.json
-  Linux   : ~/maya/blenderkit_prefs.json
+  Windows : %USERPROFILE%\\Documents\\maya\\blendkit_prefs.json
+  macOS   : ~/Library/Preferences/Autodesk/maya/blendkit_prefs.json
+  Linux   : ~/maya/blendkit_prefs.json
 
 Usage:
     from bk_maya.core.prefs import prefs   # singleton
@@ -38,7 +38,7 @@ def _prefs_path() -> str:
         docs = os.path.expanduser("~/Library/Preferences/Autodesk/maya")
     else:
         docs = os.path.expanduser("~/maya")
-    return os.path.join(docs, "maya", "blenderkit_prefs.json")
+    return os.path.join(docs, "maya", "blendkit_prefs.json")
 
 
 # ---------------------------------------------------------------------------
@@ -195,18 +195,6 @@ class _Prefs:
             log.debug("No prefs file yet at %s — using defaults.", path)
         except Exception as exc:
             log.warning("Could not load prefs (%s) — using defaults.", exc)
-        # Migration: an earlier version defaulted global_dir to
-        # ``<Documents>/BlenderKit``.  Clear it so the new default
-        # (``~/blenderkit_data``) takes effect.
-        if self.global_dir:
-            legacy = (
-                os.path.join(os.environ.get("USERPROFILE", ""), "Documents", "BlenderKit")
-                if sys.platform == "win32"
-                else os.path.expanduser("~/Documents/BlenderKit")
-            )
-            if os.path.normcase(os.path.normpath(self.global_dir)) == os.path.normcase(os.path.normpath(legacy)):
-                log.info("Migrating legacy default download dir %r → using new default", self.global_dir)
-                self.global_dir = ""
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ import sys
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BK_MAYA_DIR = os.path.join(THIS_REPO, "bk_maya")
 
-ADDON_NAME = "blenderkit_dev_hl"
+ADDON_NAME = "blendkit_dev_hl"
 
 if sys.platform == "win32":
     _AUTODESK_INSTALL_DIR = os.path.join(
