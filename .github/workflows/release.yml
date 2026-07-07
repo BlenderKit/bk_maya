@@ -12,11 +12,12 @@ name: Release
 # itself (bk_maya/_build_version.py) so users/admins can see exactly what they
 # have installed.
 #
-# FUTURE — external signed client repo:
-#   When the Go client moves to its own repo and ships *signed* binaries, add a
-#   step that downloads them into a folder and pass `--client-build <folder>`
-#   (or set the BLENDKIT_CLIENT_BINARIES env-var) to the build command below.
-#   `dev.py` already branches on that path, so this is the only change needed.
+# CLIENT BINARIES:
+#   The Go client lives in the `bk_client` submodule. `dev.py release` grabs
+#   prebuilt binaries when the submodule provides them (the newest committed
+#   vX.Y.Z folder), otherwise it builds them from source. To ship *signed*
+#   binaries instead, download them into a folder and pass `--client-build
+#   <folder>` (or set the BLENDKIT_CLIENT_BINARIES env-var).
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -43,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # bk_proxor is a submodule required by the build.
+          # bk_proxor and bk_client are submodules required by the build.
           submodules: recursive
           # Full history so `git rev-parse HEAD` (the build's commit stamp)
           # and rolling-tag moves work reliably.
@@ -65,8 +66,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
+          go-version-file: './bk_client/client/go.mod'
+          cache-dependency-path: './bk_client/client/go.sum'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -74,9 +75,10 @@ jobs:
           python-version: '3.11'
 
       - name: Build add-on
-        # To switch to the future signed-client repo, download the signed
-        # binaries here and append:  --client-build <downloaded-folder>
-        run: python bk_maya/dev.py build --channel "${{ steps.channel.outputs.channel }}"
+        # `release` grabs prebuilt client binaries from the bk_client submodule
+        # when available, otherwise builds them from source. To use externally
+        # signed binaries, download them and append: --client-build <folder>
+        run: python bk_maya/dev.py release --channel "${{ steps.channel.outputs.channel }}"
 
       - name: Read built version
         id: version

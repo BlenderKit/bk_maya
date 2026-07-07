@@ -111,11 +111,14 @@ python bk_maya/dev.py build --install-at /path/to/maya/modules --clean-dir ~/ble
 ## Releasing
 
 Before release update the add-on version in `__init__.py` and
-`blender_manifest.toml`, and the client version in `client/VERSION`. Make sure
-the bump is merged into `main`.
+`blender_manifest.toml`. The Go client version is managed in its own repository
+(the `bk_client` submodule, `bk_client/client/VERSION`) — releases pick up the
+newest client binaries available there automatically. Make sure the bump is
+merged into `main`.
 
-There is no automated release workflow yet for the Maya port — builds are
-produced from `python bk_maya/dev.py build` and published manually.
+Releases run through `python bk_maya/dev.py release`, which grabs prebuilt
+client binaries from the `bk_client` submodule when available and otherwise
+builds them from source.
 
 ## Testing
 

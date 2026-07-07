@@ -39,28 +39,9 @@ jobs:
         run: pydoclint .
       - name: Bandit (medium+)
         run: bandit -c _bandit.yaml -ll -r .
-      - name: Go format check
-        run: test -z "$(gofmt -l ./client)"
 
-  Client-Unit-Tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
-      - name: Go test
-        working-directory: ./client
-        run: go test -coverprofile=coverage-go.out
-      - name: Upload Go coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: client/coverage-go.out
-          flags: go
-          fail_ci_if_error: false
+  # The Go client's own unit tests, gofmt and coverage run in the bk_client
+  # repository's CI, not here. This repo only *builds* the client (see Build).
 
   Maya-Port-Unit-Tests:
     # Pure-Python tests for Maya port modules with no Maya/Qt dependency:
@@ -108,8 +89,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: './client/go.mod'
-          cache-dependency-path: './client/go.sum'
+          go-version-file: './bk_client/client/go.mod'
+          cache-dependency-path: './bk_client/client/go.sum'
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

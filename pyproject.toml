@@ -27,6 +27,7 @@ include = ["**/*.py"]
 extend-exclude = [
   "bk_maya/lib",         # vendored third-party packages
   "bk_maya/bk_proxor",   # git submodule, lints in its own repo
+  "bk_client",           # git submodule (Go client), lints in its own repo
   "out",
   "addon_updater.py",
   "addon_updater_ops.py",
@@ -126,7 +127,6 @@ ignore = [
 "bk_maya/scripts/**" = ["T201", "INP001", "PLW1510"]
 "bk_maya/plugins/**" = ["E402", "T201", "INP001"]
 "bk_maya/ui/placement.py" = ["E402"]   # plugin-loaded sys.path bootstrap
-"client/tools/**" = ["T201", "INP001"]
 ".github/**" = ["T201", "INP001"]
 
 [tool.ruff.lint.pydocstyle]
@@ -139,8 +139,8 @@ arg-type-hints-in-docstring = false
 check-return-types = false
 ignore-private-args = true
 ignore-underscore-args = true
-# Skip vendored libs (bk_maya/lib/**), the bk_proxor git submodule (scanned in
-# its own repo), legacy build output (out/), the Blender-side recipe scripts
-# (client/tools/**), and CI helpers (.github/**). These are either third-party
-# code we don't own or scripts where strict docstrings add no value.
-exclude = '\.venv|bk_maya[\\/]lib|bk_maya[\\/]bk_proxor|^out|^\.github|client[\\/]tools'
+# Skip vendored libs (bk_maya/lib/**), the bk_proxor and bk_client git
+# submodules (scanned in their own repos), legacy build output (out/), and CI
+# helpers (.github/**). These are either third-party code we don't own or
+# scripts where strict docstrings add no value.
+exclude = '\.venv|bk_maya[\\/]lib|bk_maya[\\/]bk_proxor|bk_client|^out|^\.github'
