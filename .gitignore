@@ -1,9 +1,7 @@
 __pycache__
 out
-# ignore built binaries
-client/v*.*.*
-client/client.exe
-
+# The Go client lives in the bk_client submodule; its build outputs are ignored
+# there. Locally built binaries also land under out/ (ignored above).
 client_builds
 .mypy_cache
 .venv

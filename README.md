@@ -35,7 +35,7 @@ It is a port of the official Blender add-on built on:
 ## Repository layout
 - [bk_maya/](bk_maya) — the Maya plugin (core, UI, plugins, vendored libs)
 - [bk_maya/bk_proxor/](bk_maya/bk_proxor) — proxor mesh-preview submodule (`.prx` / `.prxc`)
-- [client/](client) — Go client binary shared with the Blender add-on
+- [bk_client/](bk_client) — Go `blenderkit-client` submodule, shared with the Blender add-on
 - [tests/](tests) — pure-Python unit tests runnable without Maya
 
 ## Getting started (developers)

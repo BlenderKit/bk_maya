@@ -9,6 +9,7 @@ exclude_dirs:
   - "tests"             # asserts + synthetic fixtures
   - "bk_maya/lib"       # vendored third-party (qtpy, requests, packaging)
   - "bk_maya/bk_proxor" # git submodule — scanned in its own repo
+  - "bk_client"         # git submodule (Go client) — scanned in its own repo
 
 skips:
   - "B101" # assert_used — used in tests (excluded above, but harmless globally)

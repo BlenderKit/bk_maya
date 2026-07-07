@@ -331,7 +331,8 @@ def _find_export_usd_script(args: dict) -> str:
     Lookup order:
       1. ``args["export_usd_script"]`` (explicit override from Maya side).
       2. ``$BLENDKIT_TOOLS_DIR/export_usd.py``.
-      3. Walk up from this script: ``<repo>/client/tools/export_usd.py``.
+      3. Walk up from this script: ``<root>/client/tools/export_usd.py`` or the
+         ``bk_client`` submodule copy ``<root>/bk_client/client/tools/export_usd.py``.
     """
     candidates: list[str] = []
     override = args.get("export_usd_script") or ""
@@ -348,7 +349,10 @@ def _find_export_usd_script(args: dict) -> str:
         cur = os.path.dirname(cur)
         if not cur:
             break
+        # Packaged add-on layout (tools shipped under <root>/client/tools/) and
+        # source-checkout layout where the client lives in the bk_client submodule.
         candidates.append(os.path.join(cur, "client", "tools", "export_usd.py"))
+        candidates.append(os.path.join(cur, "bk_client", "client", "tools", "export_usd.py"))
 
     for c in candidates:
         if c and os.path.isfile(c):

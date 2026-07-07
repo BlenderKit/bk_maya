@@ -45,10 +45,15 @@ log = logging.getLogger(__name__)
 
 # ── Versions / constants ─────────────────────────────────────────────────────
 
-CLIENT_VERSION = "v1.9.0"
-"""Bundled client binary version. Must match a folder under ``<addon>/client/``."""
+DEFAULT_CLIENT_VERSION = "v1.10.0"
+"""Last-resort client version used only when none can be discovered on disk.
 
-API_VERSION = ".".join(CLIENT_VERSION.split(".")[:2])  # → "v1.9"
+The real version is detected at runtime from the newest ``vX.Y.Z`` folder that
+ships a binary for the current platform (see ``_detect_client_version``). The
+client now lives in the ``bk_client`` submodule, so we no longer pin a single
+hardcoded version here — a newer bundled client is picked up automatically."""
+
+_client_version_cache: str | None = None
 
 # Same ordering as the Blender addon; these are also the redirect_uri ports
 # whitelisted by the OAuth app, so we cannot pick arbitrary ones.
@@ -104,8 +109,9 @@ def _addon_root() -> str:
     """Return the directory that contains the ``client/`` binaries folder.
 
     In the source checkout this is the workspace root; in the installed
-    addon it is the parent of ``bk_maya/``.  Both layouts ship a
-    ``client/v<version>/`` directory.
+    addon it is the parent of ``bk_maya/``.  The packaged addon ships a
+    ``client/v<version>/`` directory; the source checkout builds into the
+    ``bk_client`` submodule instead (see ``_client_binaries_root``).
     """
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -128,9 +134,89 @@ def _binary_name() -> str:
     return name
 
 
+def _client_binaries_root() -> str:
+    """Directory that holds the ``vX.Y.Z/`` client-binary folders.
+
+    Two layouts are supported:
+      * packaged add-on: ``<addon_root>/client``            (dev.py copies the
+        binaries here at build time)
+      * source checkout: ``<addon_root>/bk_client/client``  (the ``bk_client``
+        submodule, where the Go sources and any local dev build live)
+
+    The packaged path is preferred when present; otherwise we fall back to the
+    submodule so a plain ``git clone --recursive`` works for developers.
+    """
+    root = _addon_root()
+    packaged = os.path.join(root, "client")
+    if os.path.isdir(packaged):
+        return packaged
+    return os.path.join(root, "bk_client", "client")
+
+
+def _parse_version(name: str) -> tuple[int, ...] | None:
+    """Parse a ``vX.Y.Z`` folder name into a comparable tuple, or ``None``."""
+    if not name.startswith("v"):
+        return None
+    try:
+        return tuple(int(part) for part in name[1:].split("."))
+    except ValueError:
+        return None
+
+
+def _detect_client_version() -> str:
+    """Return the newest bundled client version, e.g. ``v1.10.0``.
+
+    Scans ``_client_binaries_root`` for ``vX.Y.Z`` folders that actually
+    contain a binary for the current platform and returns the highest one, so a
+    newer bundled client is used automatically. Falls back to the submodule's
+    ``client/VERSION`` file (fresh checkout, before any build) and finally to
+    ``DEFAULT_CLIENT_VERSION``. The result is cached for the process lifetime.
+    """
+    global _client_version_cache
+    if _client_version_cache is not None:
+        return _client_version_cache
+
+    binaries_root = _client_binaries_root()
+    binary = _binary_name()
+    best: tuple[tuple[int, ...], str] | None = None
+    try:
+        for entry in os.listdir(binaries_root):
+            parsed = _parse_version(entry)
+            if parsed is None:
+                continue
+            if not os.path.isfile(os.path.join(binaries_root, entry, binary)):
+                continue
+            if best is None or parsed > best[0]:
+                best = (parsed, entry)
+    except OSError:
+        best = None
+
+    if best is not None:
+        _client_version_cache = best[1]
+    else:
+        # No binary folder yet — read the VERSION file next to the Go sources.
+        try:
+            with open(os.path.join(binaries_root, "VERSION"), encoding="utf-8") as fh:
+                _client_version_cache = f"v{fh.read().strip()}"
+        except OSError:
+            _client_version_cache = DEFAULT_CLIENT_VERSION
+    return _client_version_cache
+
+
+def _client_version() -> str:
+    """Bundled client version string, e.g. ``v1.10.0``."""
+    return _detect_client_version()
+
+
+def _api_version() -> str:
+    """Client HTTP API version prefix, e.g. ``v1.10`` (major.minor)."""
+    return ".".join(_detect_client_version().split(".")[:2])
+
+
 def _inplace_binary_path() -> str:
-    """Binary shipped inside the addon (``<addon>/client/vX.Y.Z/<name>``)."""
-    return os.path.join(_addon_root(), "client", CLIENT_VERSION, _binary_name())
+    """Binary shipped inside the addon (``<root>/client/vX.Y.Z/<name>`` or the
+    submodule equivalent in a source checkout)."""
+    return os.path.join(_client_binaries_root(), _client_version(), _binary_name())
 
 
 def _installed_binary_dir() -> str:
@@ -141,7 +227,7 @@ def _installed_binary_dir() -> str:
         _prefs_mod.prefs.global_dir_resolved(),
         "client",
         "bin",
-        CLIENT_VERSION,
+        _client_version(),
     )
 
 
@@ -150,7 +236,8 @@ def _installed_binary_path() -> str:
 
 
 def _client_source_dir() -> str:
-    return os.path.join(_addon_root(), "client")
+    """Go client source directory (``bk_client/client`` in a source checkout)."""
+    return _client_binaries_root()
 
 
 def _go_target() -> tuple[str, str]:
@@ -200,7 +287,7 @@ def _maybe_dev_build() -> None:
         with open(version_file, encoding="utf-8") as fh:
             version = fh.read().strip()
     except OSError:
-        version = CLIENT_VERSION.lstrip("v")
+        version = _client_version().lstrip("v")
 
     goos, goarch = _go_target()
     env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0"}
@@ -288,7 +375,7 @@ def _log_path() -> str:
 
 
 def get_base_url(port: str | None = None) -> str:
-    return f"http://127.0.0.1:{port or _active_port}/{API_VERSION}"
+    return f"http://127.0.0.1:{port or _active_port}/{_api_version()}"
 
 
 def get_app_id() -> int:
@@ -330,7 +417,7 @@ def _ping(port: str) -> bool:
     try:
         _http_request(
             "GET",
-            f"http://127.0.0.1:{port}/{API_VERSION}/report",
+            f"http://127.0.0.1:{port}/{_api_version()}/report",
             body=_minimal_report_data(),
             connect_timeout=POLL_CONNECT_TIMEOUT,
             read_timeout=POLL_READ_TIMEOUT,
