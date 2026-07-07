@@ -343,6 +343,28 @@ def copy_client_binaries(binaries_path: str, addon_build_dir: str):
     print(f"Blendkit-Client binaries copied from {binaries_path} to {target_dir}")
 
 
+def copy_client_tools(addon_build_dir: str):
+    """Copy the client's Python export recipes into the packaged add-on.
+
+    The Go client shells out to ``client/tools/export_usd.py`` /
+    ``export_glb.py`` when handling downloads; ``bg_download.py`` locates them at
+    ``<addon_root>/client/tools/`` (see ``_find_export_usd_script``). The build
+    only assembles binaries under ``client/vX.Y.Z/``, so without this the
+    packaged add-on has no tools folder and USD/glTF exports fail.
+    """
+    tools_src = os.path.join(CLIENT_SRC_DIR, "tools")
+    if not os.path.isdir(tools_src):
+        print(f"warning: client tools dir {tools_src} not found; exports will be unavailable.")
+        return
+    tools_dst = os.path.join(addon_build_dir, "client", "tools")
+    shutil.copytree(
+        tools_src,
+        tools_dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
+    print(f"Copied client tools from {tools_src} to {tools_dst}")
+
+
 # ── Versioning ────────────────────────────────────────────────────────────────
 
 
@@ -530,6 +552,10 @@ def do_build(
         blendkit_client_build(addon_build_dir)
     else:
         copy_client_binaries(client_binaries_path, addon_build_dir)
+
+    # Ship the client's Python export recipes (export_usd.py / export_glb.py)
+    # under client/tools/ so downloads that convert assets can find them.
+    copy_client_tools(addon_build_dir)
 
     # Copy bk_maya/ Python sources (including vendored lib/ and the
     # bk_proxor submodule contents). Drop dev/test artefacts from inside it.
