@@ -40,32 +40,8 @@ jobs:
       - name: Bandit (medium+)
         run: bandit -c _bandit.yaml -ll -r .
 
-  Client-Unit-Tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The Go client lives in the bk_client submodule. NOTE: while
-          # bk_client is private this checkout needs credentials (a PAT/deploy
-          # key). Once bk_client is made public, submodules: recursive is enough.
-          submodules: recursive
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './bk_client/client/go.mod'
-          cache-dependency-path: './bk_client/client/go.sum'
-      - name: Go format check
-        run: test -z "$(gofmt -l ./bk_client/client)"
-      - name: Go test
-        working-directory: ./bk_client/client
-        run: go test -coverprofile=coverage-go.out
-      - name: Upload Go coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: bk_client/client/coverage-go.out
-          flags: go
-          fail_ci_if_error: false
+  # The Go client's own unit tests, gofmt and coverage run in the bk_client
+  # repository's CI, not here. This repo only *builds* the client (see Build).
 
   Maya-Port-Unit-Tests:
     # Pure-Python tests for Maya port modules with no Maya/Qt dependency:

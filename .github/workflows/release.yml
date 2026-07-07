@@ -18,9 +18,6 @@ name: Release
 #   vX.Y.Z folder), otherwise it builds them from source. To ship *signed*
 #   binaries instead, download them into a folder and pass `--client-build
 #   <folder>` (or set the BLENDKIT_CLIENT_BINARIES env-var).
-#
-#   NOTE: while `bk_client` is private, `submodules: recursive` needs a token
-#   (PAT/deploy key) with read access. Once bk_client is public this just works.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
