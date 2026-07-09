@@ -756,12 +756,11 @@ def _parse_prxc(prxc_path: str) -> dict[str, Any]:
     """
     out: dict[str, Any] = {"lines": [], "mesh": []}
     try:
-        from bk_proxor._maya.draw import (
+        from bk_maya.bk_proxor import prx_format as pf
+        from bk_maya.bk_proxor._maya.draw import (
             prx_to_line_segments,
             prx_to_mesh_triangles,
         )
-
-        from bk_maya.bk_proxor import prx_format as pf
     except Exception as exc:
         log.debug("bk_proxor unavailable: %s", exc)
         return out

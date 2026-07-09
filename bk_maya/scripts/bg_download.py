@@ -326,13 +326,16 @@ def download_file(url: str, dest_path: str, *, api_key: str = "") -> None:
 
 
 def _find_export_usd_script(args: dict) -> str:
-    """Locate ``export_usd.py`` shipped under ``client/tools/``.
+    """Locate ``export_usd.py`` shipped alongside the client binaries.
 
     Lookup order:
       1. ``args["export_usd_script"]`` (explicit override from Maya side).
       2. ``$BLENDKIT_TOOLS_DIR/export_usd.py``.
-      3. Walk up from this script: ``<root>/client/tools/export_usd.py`` or the
-         ``bk_client`` submodule copy ``<root>/bk_client/client/tools/export_usd.py``.
+      3. Walk up from this script and, for each ``<root>``, try the packaged
+         layout ``<root>/client/vX.Y.Z/tools/export_usd.py`` (tools ship inside
+         the versioned client folder) as well as the legacy shared
+         ``<root>/client/tools/export_usd.py`` and the ``bk_client`` submodule
+         copy ``<root>/bk_client/client/tools/export_usd.py``.
     """
     candidates: list[str] = []
     override = args.get("export_usd_script") or ""
@@ -349,8 +352,16 @@ def _find_export_usd_script(args: dict) -> str:
         cur = os.path.dirname(cur)
         if not cur:
             break
-        # Packaged add-on layout (tools shipped under <root>/client/tools/) and
-        # source-checkout layout where the client lives in the bk_client submodule.
+        # Packaged add-on layout: tools ship inside the versioned client folder
+        # (client/vX.Y.Z/tools/). Scan every version folder present.
+        client_root = os.path.join(cur, "client")
+        try:
+            for entry in sorted(os.listdir(client_root), reverse=True):
+                if entry.startswith("v"):
+                    candidates.append(os.path.join(client_root, entry, "tools", "export_usd.py"))  # noqa: PERF401
+        except OSError:
+            pass
+        # Legacy shared layout and source-checkout (bk_client submodule) copy.
         candidates.append(os.path.join(cur, "client", "tools", "export_usd.py"))
         candidates.append(os.path.join(cur, "bk_client", "client", "tools", "export_usd.py"))
 

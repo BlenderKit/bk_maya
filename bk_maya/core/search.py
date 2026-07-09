@@ -148,6 +148,9 @@ def search(
     )
 
     try:
+        # Explicit user action: clear any "client unavailable" latch so a
+        # freshly built/installed client is retried without restarting Maya.
+        client_lib.reset_availability()
         client_lib.ensure_running()
     except Exception as exc:
         log.error("Cannot start Blendkit client: %s", exc)

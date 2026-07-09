@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
@@ -97,6 +98,17 @@ _app_id: int = os.getpid()
 _failed_reports: int = 0
 _RESPAWN_AFTER_FAILURES = 10
 
+# When the client binary is missing (or a spawn fails because of it), latch the
+# reason so the report poller and ``ensure_running`` stop hammering Maya's GUI
+# thread with connect / rebuild / respawn attempts. Cleared on a successful
+# start or an explicit user-initiated retry (see ``reset_availability``).
+_unavailable_reason: str | None = None
+
+# True once a client is known reachable (freshly spawned or reused). The report
+# poller only issues its blocking ``/report`` HTTP call while this holds, so a
+# missing or not-yet-started client never freezes the UI thread.
+_have_client: bool = False
+
 # Installed binary copy, populated lazily by ``_binary_path`` so a read-only
 # addon directory still works (Microsoft Store Maya, sandboxed installs).
 _use_inplace_client: bool = False
@@ -128,7 +140,7 @@ def _binary_name() -> str:
     elif arch == "aarch64":
         arch = "arm64"
 
-    name = f"blenderkit-client-{os_name}-{arch}"
+    name = f"bk_client-{os_name}-{arch}"
     if os_name == "windows":
         name += ".exe"
     return name
@@ -483,29 +495,65 @@ def ensure_running(timeout: float = 8.0) -> str:
 
     Thread-safe.  No-op if a process is already responsive.
     """
-    global _process, _active_port
+    global _process, _active_port, _have_client, _unavailable_reason
 
     with _state_lock:
         # Already-running existing process (perhaps from a previous Maya session)?
         existing = _find_running_client()
         if existing:
             _active_port = existing
+            _have_client = True
+            _unavailable_reason = None
             log.debug("Reusing client on port %s", existing)
             return existing
 
         # Spawn a new one on the preferred port and wait for it.
         port = CLIENT_PORTS[0]
-        _process = _spawn(port)
+        try:
+            _process = _spawn(port)
+        except FileNotFoundError as exc:
+            # No binary on disk: latch the reason so the poller backs off and
+            # the UI thread is not repeatedly stalled trying to start a client
+            # that cannot exist until the user (re)builds it.
+            _have_client = False
+            _unavailable_reason = str(exc)
+            raise
         _active_port = port
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _ping(port):
             log.info("Client ready on port %s", port)
+            _have_client = True
+            _unavailable_reason = None
             return port
         time.sleep(0.15)
 
     raise RuntimeError(f"Blendkit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
+
+
+def client_unavailable_reason() -> str | None:
+    """Return why the client is unavailable (e.g. missing binary), or ``None``."""
+    return _unavailable_reason
+
+
+def reset_availability() -> None:
+    """Clear the unavailable latch so the next ``ensure_running`` retries fully.
+
+    Called on an explicit user action (e.g. starting a search) so a freshly
+    built/installed client is picked up without restarting Maya.
+    """
+    global _unavailable_reason
+    _unavailable_reason = None
+
+
+def should_poll_reports() -> bool:
+    """True when the report poller should issue its blocking ``/report`` call.
+
+    Skips polling while no client is running or the binary is known missing, so
+    the 200 ms GUI-thread timer never blocks trying to reach a dead port.
+    """
+    return _have_client and _unavailable_reason is None
 
 
 def shutdown() -> None:
@@ -742,6 +790,67 @@ def _try_respawn() -> None:
         ensure_running()
     except Exception as exc:
         log.error("Respawn failed: %s", exc)
+
+
+# ── Settings sync (the Client is the source of truth) ─────────────────────────
+#
+# The Client owns a versioned settings store and broadcasts a Snapshot on every
+# /report (task_type "settings") with a monotonically increasing ``revision``.
+# These thin helpers let a plugin read the store directly and push changes up;
+# the reconcile logic (revision debounce, adopt/offer) lives in
+# ``core.client_settings``.
+
+
+def get_settings() -> dict[str, Any] | None:
+    """GET the current settings Snapshot from the Client (``None`` on failure)."""
+    try:
+        return _http_request("GET", f"{get_base_url()}/settings/get")
+    except Exception as exc:
+        log.debug("get_settings failed: %s", exc)
+        return None
+
+
+def set_shared_settings(**fields: Any) -> dict[str, Any] | None:
+    """Patch shared settings (e.g. ``server=...``); returns the new Snapshot."""
+    return _http_request("POST", f"{get_base_url()}/settings/set", body=fields)
+
+
+def set_variable(variable: str, value: str, plugin: str = "") -> dict[str, Any] | None:
+    """Store a free-form variable, namespaced under *plugin* when non-empty."""
+    return _http_request(
+        "POST",
+        f"{get_base_url()}/settings/set_variable",
+        body={"plugin": plugin, "variable": variable, "value": value},
+    )
+
+
+def set_executable(name: str, path: str, version: str = "", args: list[str] | None = None) -> dict[str, Any] | None:
+    """Register/replace a named executable (e.g. ``blender``) the Client shares.
+
+    Returns the new settings Snapshot so the caller can apply it immediately.
+    """
+    body: dict[str, Any] = {"name": name, "path": path}
+    if version:
+        body["version"] = version
+    if args:
+        body["args"] = args
+    return _http_request("POST", f"{get_base_url()}/executable/set", body=body)
+
+
+def get_executables(name: str, version: str = "") -> list[dict[str, Any]]:
+    """Return the Client's stored executables for *name* (highest version first)."""
+    query = {"name": name}
+    if version:
+        query["version"] = version
+    url = f"{get_base_url()}/executable/get?{urllib.parse.urlencode(query)}"
+    try:
+        resp = _http_request("GET", url)
+    except Exception as exc:
+        log.debug("get_executables failed: %s", exc)
+        return []
+    if isinstance(resp, dict) and isinstance(resp.get("executables"), list):
+        return resp["executables"]
+    return []
 
 
 # ── Task callback registry ───────────────────────────────────────────────────
@@ -1006,3 +1115,17 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 pcb(result, status, message)
             except Exception:
                 log.exception("Profile callback raised")
+
+        elif ttype == "settings":
+            # The Client broadcasts its settings Snapshot on every /report.
+            # Reconcile (revision-debounced adopt) in core.client_settings.
+            if status != "finished":
+                continue
+            snap = task.get("result") or {}
+            if isinstance(snap, dict) and snap:
+                from . import client_settings
+
+                try:
+                    client_settings.on_snapshot(snap)
+                except Exception:
+                    log.exception("Settings snapshot apply raised")

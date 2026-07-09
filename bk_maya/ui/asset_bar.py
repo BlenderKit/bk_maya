@@ -165,6 +165,11 @@ class _ReportPoller(QObject):
         self._timer.stop()
 
     def _tick(self) -> None:
+        # Skip the blocking /report call while no client is running or the
+        # binary is known missing — otherwise this 200 ms GUI-thread timer
+        # stalls trying to reach a dead port and Maya becomes unresponsive.
+        if not client_lib.should_poll_reports():
+            return
         try:
             tasks = client_lib.get_reports(api_key=auth.get_api_key())
         except Exception as exc:

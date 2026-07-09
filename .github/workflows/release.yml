@@ -13,11 +13,11 @@ name: Release
 # have installed.
 #
 # CLIENT BINARIES:
-#   The Go client lives in the `bk_client` submodule. `dev.py release` grabs
-#   prebuilt binaries when the submodule provides them (the newest committed
-#   vX.Y.Z folder), otherwise it builds them from source. To ship *signed*
-#   binaries instead, download them into a folder and pass `--client-build
-#   <folder>` (or set the BLENDKIT_CLIENT_BINARIES env-var).
+#   The Go client lives in its own repo (BlenderKit/bk_client). `dev.py release`
+#   downloads the *signed* `bk_client.zip` from that repo's GitHub Releases —
+#   we never build/sign the client here, so the shipped binaries are the
+#   correctly code-signed/notarized ones. Pass `--client-build <bk_client.zip>`
+#   (or set BLENDKIT_CLIENT_BINARIES) to use a locally downloaded signed bundle.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -63,27 +63,23 @@ jobs:
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "Selected channel: $CHANNEL"
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: './bk_client/client/go.mod'
-          cache-dependency-path: './bk_client/client/go.sum'
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Build add-on
-        # `release` grabs prebuilt client binaries from the bk_client submodule
-        # when available, otherwise builds them from source. To use externally
-        # signed binaries, download them and append: --client-build <folder>
+        # `release` downloads the signed bk_client.zip from the bk_client
+        # GitHub Releases (no local client build). To use a locally downloaded
+        # signed bundle instead, append: --client-build <bk_client.zip>
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bk_maya/dev.py release --channel "${{ steps.channel.outputs.channel }}"
 
       - name: Read built version
         id: version
         run: |
-          VERSION=$(python -c "import runpy; print(runpy.run_path('out/stage/blenderkit/bk_maya/_build_version.py')['VERSION'])")
+          VERSION=$(python -c "import runpy; print(runpy.run_path('out/stage/blendkit/bk_maya/_build_version.py')['VERSION'])")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Built version: $VERSION"
 
