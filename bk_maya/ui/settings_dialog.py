@@ -102,6 +102,28 @@ class _GeneralTab(QWidget):
         self._tips_on_start.setChecked(prefs.tips_on_start)
         layout.addWidget(self._tips_on_start)
 
+        # ── Updates ────────────────────────────────────────────────────────
+        layout.addWidget(_section("Updates"))
+        layout.addWidget(_hr())
+
+        self._check_updates = QCheckBox("Check for new releases on startup")
+        self._check_updates.setChecked(prefs.check_for_updates)
+        layout.addWidget(self._check_updates)
+
+        self._include_alpha = QCheckBox("Also offer alpha (pre-release) builds")
+        self._include_alpha.setChecked(prefs.include_alpha_updates)
+        layout.addWidget(self._include_alpha)
+        layout.addWidget(
+            _note(
+                "By default only stable releases are offered. Enable this to also "
+                "be notified about the latest rolling alpha build.",
+            ),
+        )
+
+        # keep the alpha toggle meaningful only while checking is on
+        self._check_updates.toggled.connect(self._include_alpha.setEnabled)
+        self._include_alpha.setEnabled(self._check_updates.isChecked())
+
         # ── Thumbnail ─────────────────────────────────────────────────────
         layout.addWidget(_section("Asset Bar"))
         layout.addWidget(_hr())
@@ -133,6 +155,8 @@ class _GeneralTab(QWidget):
         prefs.show_on_start = self._show_on_start.isChecked()
         prefs.tips_on_start = self._tips_on_start.isChecked()
         prefs.thumbnail_size = self._thumb_spin.value()
+        prefs.check_for_updates = self._check_updates.isChecked()
+        prefs.include_alpha_updates = self._include_alpha.isChecked()
 
 
 # endregion: General
