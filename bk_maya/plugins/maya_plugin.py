@@ -157,6 +157,12 @@ def _build_menu() -> None:
         command=("import bk_maya.ui.settings_dialog as _sd; _sd.open_settings()"),
     )
 
+    cmds.menuItem(
+        label="Check for Updates…",
+        annotation="Check GitHub for a newer Blendkit release",
+        command=("import bk_maya.plugins.maya_plugin as _mp; _mp.check_for_updates_interactive()"),
+    )
+
     cmds.menuItem(divider=True)
 
     # ── About ─────────────────────────────────────────────────────────────────
@@ -174,6 +180,99 @@ def _remove_menu() -> None:
     if cmds.menu(_MENU_NAME, exists=True):
         cmds.deleteUI(_MENU_NAME, menu=True)
         print("[Blendkit] Menu removed.")
+
+
+# ---------------------------------------------------------------------------
+# Update check
+# ---------------------------------------------------------------------------
+
+
+def _maybe_check_for_updates() -> None:
+    """Kick off a background check for a newer plugin release, if enabled.
+
+    Respects ``prefs.check_for_updates`` (default on) and
+    ``prefs.include_alpha_updates`` (default off). Runs on a worker thread so
+    Maya's UI is never blocked; the result is only logged.
+    """
+    try:
+        from bk_maya.core import updates
+        from bk_maya.core.prefs import prefs
+    except Exception as exc:  # pragma: no cover - never block plug-in load
+        print(f"[Blendkit] Update check unavailable: {exc}")
+        return
+
+    if not prefs.check_for_updates:
+        return
+
+    def _on_result(result: updates.UpdateResult) -> None:
+        if result.update_available and result.latest is not None:
+            channel = "alpha" if result.latest.prerelease else "stable"
+            log = logging.getLogger("bk_maya.plugins.maya_plugin")
+            log.info(
+                "A newer Blendkit release is available: %s (%s). You are running %s. Download it at %s",
+                result.latest.version,
+                channel,
+                result.current_version,
+                updates.RELEASES_PAGE,
+            )
+
+    try:
+        updates.check_for_update_async(_on_result)
+    except Exception as exc:
+        print(f"[Blendkit] Update check could not start: {exc}")
+
+
+def check_for_updates_interactive() -> None:
+    """Menu-triggered update check that always reports the outcome in a dialog.
+
+    Unlike the silent startup check this ignores ``prefs.check_for_updates`` (the
+    user explicitly asked) but still honours ``prefs.include_alpha_updates`` for
+    whether alpha builds are considered. The GitHub request runs on a worker
+    thread; the dialog is shown back on Maya's main thread via ``evalDeferred``.
+    """
+    try:
+        import maya.cmds as cmds
+
+        from bk_maya.core import updates
+    except Exception as exc:
+        print(f"[Blendkit] Update check unavailable: {exc}")
+        return
+
+    def _show(title: str, message: str) -> None:
+        # Marshal the dialog back onto Maya's main thread.
+        def _dialog() -> None:
+            try:
+                cmds.confirmDialog(title=title, message=message, button=["OK"])
+            except Exception as exc:
+                print(f"[Blendkit] {title}: {message} ({exc})")
+
+        try:
+            cmds.evalDeferred(_dialog)
+        except Exception:
+            _dialog()
+
+    def _on_result(result: updates.UpdateResult) -> None:
+        if result.update_available and result.latest is not None:
+            channel = "alpha" if result.latest.prerelease else "stable"
+            _show(
+                "Blendkit — Update Available",
+                f"A newer {channel} release is available:\n\n"
+                f"    {result.latest.version}\n\n"
+                f"You are running {result.current_version}.\n\n"
+                f"Download it from:\n{updates.RELEASES_PAGE}",
+            )
+        elif result.latest is not None:
+            _show(
+                "Blendkit — Up To Date",
+                f"You are running the latest release ({result.current_version}).",
+            )
+        else:
+            _show(
+                "Blendkit — Update Check Failed",
+                "Could not reach GitHub to check for updates. Please check your internet connection and try again.",
+            )
+
+    updates.check_for_update_async(_on_result)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +316,10 @@ def initializePlugin(plugin: om2.MObject) -> None:
         _build_menu()
     except Exception as exc:
         print(f"[Blendkit] Menu not created: {exc}")
+
+    # Non-blocking check for a newer release (respects user prefs).
+    _maybe_check_for_updates()
+
     print(f"[Blendkit] Plugin initialized (v{PLUGIN_VERSION})")
 
 

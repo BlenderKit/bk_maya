@@ -58,6 +58,13 @@ class _Prefs:
     thumbnail_size: int = 128
     """Thumbnail tile size in the asset bar (pixels, 48-256)."""
 
+    # ── Updates ────────────────────────────────────────────────────────────
+    check_for_updates: bool = True
+    """Check GitHub for a newer plugin release on startup."""
+
+    include_alpha_updates: bool = False
+    """Also consider rolling alpha (pre-release) builds when checking for updates."""
+
     # ── Files ──────────────────────────────────────────────────────────────
     global_dir: str = ""
     """Root directory for downloaded assets.  Empty = platform default."""
