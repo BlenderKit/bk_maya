@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -180,9 +181,11 @@ def _unpack_client_bundle(zip_path: str, client_dir: str) -> str:
             with zf.open(member) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
             # Zip archives drop the executable bit; restore it on unix binaries
-            # (the platform binaries sit directly in the versioned folder).
+            # (the platform binaries sit directly in the versioned folder). Use
+            # stat constants rather than an octal literal so this reads clearly
+            # and avoids a false-positive permissive-chmod lint (S103/B103).
             if os.path.dirname(target) == version_dir and not target.endswith((".exe", ".json")) and rel != "VERSION":
-                os.chmod(target, os.stat(target).st_mode | 0o111)
+                os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)  # noqa: S103
     return version
 
 

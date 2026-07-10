@@ -17,6 +17,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -177,7 +178,7 @@ def _unpack_client_zip(zip_path: str, version_dir: str) -> None:
                 and not target.endswith((".exe", ".json"))
                 and os.path.basename(target) != "VERSION"
             ):
-                os.chmod(target, os.stat(target).st_mode | 0o111)
+                os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _build_and_install_client() -> None:

@@ -170,12 +170,36 @@
         },
 
         {
+            "name": "[RUFF] Check All Diff",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "ruff",
+            "args": [
+                "format",
+                "--check",
+                "--diff",
+                "."
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python",
+            }
+        },
+
+        {
             "name": "[RUFF] Fix All",
             "type": "debugpy",
             "request": "launch",
             "module": "ruff",
             "args": [
-                "fix",
+                "format",
                 "."
             ],
             "console": "integratedTerminal",
