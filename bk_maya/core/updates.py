@@ -5,12 +5,13 @@ The plugin ships from the ``BlenderKit/bk_maya`` GitHub repository:
   * **stable** releases are tagged ``v<major>.<minor>.<YYMMDDHHmm>`` and are
     published as normal (non pre-release) releases.  The latest one is exposed
     by the ``/releases/latest`` endpoint.
-  * **alpha** builds are a single rolling pre-release under the ``alpha`` tag,
-    retagged to the newest ``main`` commit on every merge.
+  * **alpha** builds are tagged the same way but with a ``-alpha`` suffix
+    (``v<major>.<minor>.<YYMMDDHHmm>-alpha``) and flagged as GitHub
+    pre-releases. The newest one is found by listing recent releases.
 
 By default :func:`check_for_update` only looks at the newest *stable* release.
 When ``include_alpha`` is enabled (mirrors ``prefs.include_alpha_updates``) it
-also considers the rolling alpha build and reports whichever is newer.
+also considers the newest alpha build and reports whichever is newer.
 
 All calls are synchronous and network-bound — run them on a worker thread so
 Maya's UI stays responsive (see :func:`check_for_update_async`).
@@ -41,7 +42,7 @@ GITHUB_REPO = "BlenderKit/bk_maya"
 """``owner/name`` of the repository that publishes plugin releases."""
 
 _API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-_API_ALPHA = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/alpha"
+_API_LIST = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30"
 
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
 """Human-facing releases page (shown to the user when an update is found)."""
@@ -65,10 +66,10 @@ class ReleaseInfo:
     """Full version string, e.g. ``0.1.2506071430`` or ``0.1.2601011200-alpha``."""
 
     tag: str
-    """Git tag the release points at (``v0.1.2506071430`` or ``alpha``)."""
+    """Git tag the release points at (``v0.1.2506071430`` or ``v0.1.…-alpha``)."""
 
     prerelease: bool
-    """True for the rolling alpha channel."""
+    """True for alpha (pre-release) builds."""
 
     html_url: str
     """GitHub release page URL."""
@@ -126,9 +127,9 @@ def _is_newer(candidate: str, current: str) -> bool:
 def _extract_version(release: dict) -> str | None:
     """Pull a full version string out of a GitHub release payload.
 
-    Stable releases carry it in ``tag_name`` (``v0.1.…``); the rolling alpha
-    release has a bare ``alpha`` tag, so the version lives in the release name
-    or body (``Alpha (rolling) — 0.1.…-alpha``). We scan all three.
+    Both channels tag as ``v<version>`` — stable ``v0.1.2506071430`` and alpha
+    ``v0.1.2607101129-alpha`` — so ``tag_name`` normally carries it. We fall
+    back to the release name/body just in case.
     """
     for field in ("tag_name", "name", "body"):
         text = release.get(field) or ""
@@ -145,6 +146,12 @@ def _extract_version(release: dict) -> str | None:
 
 def _fetch_release(url: str) -> dict | None:
     """GET a GitHub release JSON payload, or ``None`` on any failure."""
+    payload = _fetch_json(url)
+    return payload if isinstance(payload, dict) else None
+
+
+def _fetch_json(url: str):
+    """GET and decode a GitHub JSON payload (object or list), or ``None``."""
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": f"bk_maya/{_version.get_version()}",
@@ -161,7 +168,7 @@ def _fetch_release(url: str) -> dict | None:
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT, context=context) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        # 404 simply means that channel has no release yet (e.g. no alpha).
+        # 404 simply means that resource has no release yet (e.g. no stable).
         if exc.code == 404:
             log.debug("No release found at %s (404)", url)
         else:
@@ -173,14 +180,11 @@ def _fetch_release(url: str) -> dict | None:
     return None
 
 
-def _release_info(url: str, *, expect_prerelease: bool) -> ReleaseInfo | None:
-    """Fetch a release and adapt it into a :class:`ReleaseInfo`."""
-    payload = _fetch_release(url)
-    if not payload:
-        return None
+def _to_release_info(payload: dict, *, expect_prerelease: bool) -> ReleaseInfo | None:
+    """Adapt a GitHub release payload into a :class:`ReleaseInfo`."""
     version = _extract_version(payload)
     if not version:
-        log.debug("Could not extract version from release at %s", url)
+        log.debug("Could not extract version from release %r", payload.get("tag_name"))
         return None
     return ReleaseInfo(
         version=version,
@@ -192,12 +196,29 @@ def _release_info(url: str, *, expect_prerelease: bool) -> ReleaseInfo | None:
 
 def fetch_latest_stable() -> ReleaseInfo | None:
     """Return the newest published *stable* release, or ``None``."""
-    return _release_info(_API_LATEST, expect_prerelease=False)
+    payload = _fetch_release(_API_LATEST)
+    if not payload:
+        return None
+    return _to_release_info(payload, expect_prerelease=False)
 
 
 def fetch_latest_alpha() -> ReleaseInfo | None:
-    """Return the rolling *alpha* pre-release, or ``None`` if not published."""
-    return _release_info(_API_ALPHA, expect_prerelease=True)
+    """Return the newest *alpha* (pre-release) build, or ``None``.
+
+    Alpha builds are versioned pre-releases tagged ``v<version>-alpha``, so we
+    list recent releases and pick the newest one flagged as a pre-release.
+    """
+    payload = _fetch_json(_API_LIST)
+    if not isinstance(payload, list):
+        return None
+    latest: ReleaseInfo | None = None
+    for release in payload:
+        if not isinstance(release, dict) or not release.get("prerelease"):
+            continue
+        info = _to_release_info(release, expect_prerelease=True)
+        if info and (latest is None or _is_newer(info.version, latest.version)):
+            latest = info
+    return latest
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +230,9 @@ def check_for_update(include_alpha: bool | None = None) -> UpdateResult:
     """Check GitHub for a newer plugin release.
 
     Args:
-        include_alpha: When ``True`` also consider the rolling alpha build and
-            report whichever channel is newer. When ``None`` (default) the value
-            is taken from ``prefs.include_alpha_updates``.
+        include_alpha: When ``True`` also consider the newest alpha (pre-release)
+            build and report whichever channel is newer. When ``None`` (default)
+            the value is taken from ``prefs.include_alpha_updates``.
 
     Returns:
         An :class:`UpdateResult` describing the newest applicable release and
