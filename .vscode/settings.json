@@ -57,7 +57,18 @@
 
     "files.insertFinalNewline": true,
 
+    // ── Ruff: match the CLI `ruff check .` exactly ────────────────────────
+    // Use the project's .venv ruff (same version + pyproject config as the
+    // terminal), not the extension's bundled copy — otherwise rule behaviour
+    // (e.g. S103 vs RUF100) can differ between the IDE and CI.
+    // NOTE: this requires the .venv interpreter to be selected
+    // (Command Palette → "Python: Select Interpreter" → ./.venv).
     "ruff.enable": true,
+    "ruff.importStrategy": "fromEnvironment",
+    "ruff.nativeServer": "on",
+    "ruff.lint.enable": true,
+    "ruff.organizeImports": true,
+    // The extension lints OPEN files only; run `ruff check .` for a full sweep.
 
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
@@ -65,7 +76,11 @@
         "editor.formatOnSave": true,
         "editor.formatOnPaste": true,
         "editor.formatOnType": true,
-        "editor.renderFinalNewline": "on"
+        "editor.renderFinalNewline": "on",
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
     },
 
     "[go]": {

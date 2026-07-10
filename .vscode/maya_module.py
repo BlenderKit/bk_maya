@@ -17,8 +17,10 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import zipfile
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,6 +28,7 @@ import sys
 
 THIS_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BK_MAYA_DIR = os.path.join(THIS_REPO, "bk_maya")
+CLIENT_REPO_DIR = os.path.join(THIS_REPO, "bk_client")
 
 ADDON_NAME = "blendkit_dev_hl"
 
@@ -92,7 +95,7 @@ def _all_module_dirs() -> list[str]:
     """
     dirs: list[str] = []
     for maya_app in _get_maya_app_dirs():
-        dirs.append(os.path.join(maya_app, "modules"))
+        # dirs.append(os.path.join(maya_app, "modules"))
         for ver in _installed_maya_versions():
             dirs.append(os.path.join(maya_app, ver, "modules"))
     return dirs
@@ -140,15 +143,106 @@ def _mod_points_here(mod_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _read_client_version() -> str | None:
+    """Return the client version (``vX.Y.Z``) from bk_client/client/VERSION."""
+    version_file = os.path.join(CLIENT_REPO_DIR, "client", "VERSION")
+    try:
+        with open(version_file, encoding="utf-8") as fh:
+            return "v" + fh.read().strip()
+    except OSError:
+        return None
+
+
+def _unpack_client_zip(zip_path: str, version_dir: str) -> None:
+    """Extract ``bk_client.zip`` into *version_dir*, flattening the archive's
+    top-level ``client/`` root so binaries land directly in the folder the
+    dev-mode runtime scans (``bk_client/client/vX.Y.Z/``)."""
+    os.makedirs(version_dir, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            rel = member.filename
+            if rel.startswith("client/"):
+                rel = rel[len("client/") :]
+            if not rel:
+                continue
+            target = os.path.join(version_dir, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with zf.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            # Zip drops the exec bit; restore it on the unix platform binaries
+            # that sit directly in the versioned folder.
+            if (
+                os.path.dirname(target) == version_dir
+                and not target.endswith((".exe", ".json"))
+                and os.path.basename(target) != "VERSION"
+            ):
+                os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _build_and_install_client() -> None:
+    """Build the client locally and unpack its release zip for dev use.
+
+    Delegates the cross-platform compile + bundling to ``bk_client/dev.py``
+    (its own local "release"), then unzips the resulting ``bk_client.zip`` into
+    ``bk_client/client/vX.Y.Z/`` — the exact layout the hardlinked dev add-on's
+    runtime looks for, so searches/downloads work without a packaged build.
+
+    Non-fatal: if the submodule or the Go toolchain is missing we warn and keep
+    going so the .mod files are still written.
+    """
+    dev_script = os.path.join(CLIENT_REPO_DIR, "dev.py")
+    if not os.path.isfile(dev_script):
+        print(
+            "bk_client submodule not found; skipping client build "
+            "(run `git submodule update --init --recursive`)."
+        )
+        return
+    version = _read_client_version()
+    if not version:
+        print("Could not read bk_client/client/VERSION; skipping client build.")
+        return
+
+    out_dir = os.path.join(CLIENT_REPO_DIR, "out")
+    print(f"\nBuilding Blendkit-Client {version} locally (bk_client/dev.py build) ...")
+    try:
+        subprocess.run(
+            [sys.executable, "dev.py", "build", "--out", out_dir],
+            cwd=CLIENT_REPO_DIR,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(
+            f"warning: client build failed ({exc}); the add-on will report the "
+            "client as missing until you build it (needs the Go toolchain)."
+        )
+        return
+
+    zip_path = os.path.join(out_dir, version, "bk_client.zip")
+    if not os.path.isfile(zip_path):
+        print(f"warning: expected {zip_path} not found; client not installed.")
+        return
+
+    version_dir = os.path.join(CLIENT_REPO_DIR, "client", version)
+    shutil.rmtree(version_dir, ignore_errors=True)
+    _unpack_client_zip(zip_path, version_dir)
+    print(f"Installed client into {version_dir}")
+
+
 def cmd_hardlink() -> None:
     """Write .mod registration files for all installed Maya versions.
 
-    Also runs `bk_maya/dev.py vendor` to populate bk_maya/lib/ with qtpy.
+    Also runs `bk_maya/dev.py vendor` to populate bk_maya/lib/ with qtpy, and
+    builds + installs the client locally so the dev add-on can reach it.
     """
     # Vendor pure-Python dependencies first.
     dev_script = os.path.join(BK_MAYA_DIR, "dev.py")
     print("Vendoring dependencies into bk_maya/lib/ ...")
     subprocess.run([sys.executable, dev_script, "vendor"], cwd=BK_MAYA_DIR, check=True)
+
+    # Build + install the local (unsigned) client for dev use.
+    _build_and_install_client()
 
     # Build .mod content.
     # Base = repo root so relative paths can address bk_maya/ subdirs.

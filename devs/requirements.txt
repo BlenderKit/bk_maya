@@ -1,3 +1,0 @@
-ruff~=0.15.6
-pydoclint~=0.8.3
-bandit~=1.9.4

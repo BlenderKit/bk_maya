@@ -1,0 +1,9 @@
+{
+  // Recommended extensions for this workspace. VS Code will prompt to install
+  // these when the folder is opened.
+  "recommendations": [
+    "charliermarsh.ruff", // Python lint + format (matches `ruff check .` / `ruff format .`)
+    "ms-python.python", // Python language support + interpreter selection
+    "golang.go" // Go tooling for the bk_client submodule
+  ]
+}

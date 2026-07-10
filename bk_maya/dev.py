@@ -18,12 +18,15 @@
 # type: ignore
 
 import argparse
+import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import zipfile
 from datetime import datetime, timezone
 
@@ -33,23 +36,28 @@ CHANNEL_STABLE = "stable"
 CHANNEL_ALPHA = "alpha"
 CHANNEL_DEV = "dev"
 
-# ── Client source (see blendkit_client_build / copy_client_binaries) ────────
-# The Go client now lives in its own repository, embedded here as the
-# ``bk_client`` submodule (see .gitmodules). Its Go sources are at
-# ``bk_client/client`` and its version is ``bk_client/client/VERSION``.
+# ── Client source (see blendkit_client_build / download_client_release) ─────
+# The Go client lives in its own repository, embedded here as the ``bk_client``
+# submodule (see .gitmodules). Its Go sources are at ``bk_client/client`` and its
+# version is ``bk_client/client/VERSION``. The submodule's own ``dev.py build``
+# cross-compiles every platform and bundles the binaries + tools + icons into a
+# single ``bk_client.zip`` release archive.
 #
 # Build policy:
-#   • ``build``   (local / CI testing) compiles the client from the submodule
-#     sources for every platform, so client changes are exercised end-to-end.
-#   • ``release`` grabs prebuilt binaries when available — either an explicit
-#     ``--client-build <folder>`` of *signed* binaries, or, failing that, the
-#     newest ``vX.Y.Z`` folder committed inside the submodule. If neither is
-#     present it falls back to building from source, so a release never blocks
-#     on missing binaries. In the future a trigger will have the client repo
-#     publish signed binaries that ``--client-build`` (or ``$BLENDKIT_CLIENT_BINARIES``)
-#     points at.
+#   • ``build``   (local / debug) delegates the compile to the submodule's
+#     ``dev.py`` and unpacks the resulting ``bk_client.zip`` into the add-on, so
+#     client changes are exercised end-to-end. Binaries are UNSIGNED.
+#   • ``release`` downloads the *signed* ``bk_client.zip`` published on the
+#     bk_client GitHub releases (https://github.com/BlenderKit/bk_client),
+#     because code-signing/notarization happens in that repo's CI. Pass
+#     ``--client-build <bk_client.zip>`` (or ``$BLENDKIT_CLIENT_BINARIES``) to use
+#     a locally downloaded signed bundle instead of hitting the network.
 # The env-var lets CI inject a path without changing the command line.
 CLIENT_BINARIES_ENV = "BLENDKIT_CLIENT_BINARIES"
+
+# bk_client GitHub release the ``release`` command pulls signed binaries from.
+CLIENT_RELEASE_REPO = "BlenderKit/bk_client"
+CLIENT_RELEASE_ASSET = "bk_client.zip"
 
 # Location of the bk_client submodule and its Go client sources.
 CLIENT_SUBMODULE_DIR = "bk_client"
@@ -128,58 +136,172 @@ def read_client_version() -> str:
         return f.read().strip()
 
 
-def blendkit_client_build(abs_build_dir: str):
-    """Build blendkit-client for all platforms in parallel."""
+def _read_bundle_version(zf: zipfile.ZipFile) -> str:
+    """Return the ``vX.Y.Z`` version recorded inside a ``bk_client.zip`` bundle.
+
+    The bundle carries its own ``VERSION`` file (and ``manifest.json``) so the
+    packaged version follows the actual binaries, not whatever the submodule
+    happens to be checked out at.
+    """
+    names = set(zf.namelist())
+    for candidate in ("client/VERSION", "VERSION"):
+        if candidate in names:
+            return "v" + zf.read(candidate).decode("utf-8").strip()
+    raise RuntimeError(f"{CLIENT_RELEASE_ASSET} is missing a VERSION file")
+
+
+def _unpack_client_bundle(zip_path: str, client_dir: str) -> str:
+    """Unpack a ``bk_client.zip`` release bundle into the packaged client layout.
+
+    The archive nests everything under a top-level ``client/`` directory. We
+    flatten that root and drop the whole payload inside the versioned folder the
+    runtime looks in (see ``core/client_lib.py`` and ``scripts/bg_download.py``)::
+
+        client/vX.Y.Z/bk_client-<platform>
+        client/vX.Y.Z/tools/ , icons/ , docs/
+        client/vX.Y.Z/VERSION , manifest.json
+
+    Returns the detected client version (``vX.Y.Z``).
+    """
+    with zipfile.ZipFile(zip_path) as zf:
+        version = _read_bundle_version(zf)
+        version_dir = os.path.join(client_dir, version)
+        os.makedirs(version_dir, exist_ok=True)
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            rel = member.filename
+            if rel.startswith("client/"):
+                rel = rel[len("client/") :]
+            if not rel:
+                continue
+            # Everything lands inside the versioned folder.
+            target = os.path.join(version_dir, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with zf.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            # Zip archives drop the executable bit; restore it on unix binaries
+            # (the platform binaries sit directly in the versioned folder). Use
+            # stat constants rather than an octal literal so this reads clearly
+            # and avoids a false-positive permissive-chmod lint (S103/B103).
+            if os.path.dirname(target) == version_dir and not target.endswith((".exe", ".json")) and rel != "VERSION":
+                os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)  # noqa: S103
+    return version
+
+
+def blendkit_client_build(abs_build_dir: str) -> None:
+    """Build the client locally and unpack its release bundle into the add-on.
+
+    Delegates the cross-platform compile to the ``bk_client`` submodule's own
+    ``dev.py`` (which also bundles the tools + icons into ``bk_client.zip``),
+    then unpacks that bundle into ``<addon>/client`` — the very same layout a
+    downloaded signed release produces (see :func:`download_client_release`).
+    Used by the local/debug ``build`` command; the binaries it produces are
+    UNSIGNED.
+    """
+    client_dir = os.path.join(abs_build_dir, "client")
     client_version = read_client_version()
-    build_dir = os.path.join(abs_build_dir, "client")
-    builds = [
-        {
-            "env": {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-windows-x86_64.exe"),
-        },
-        {
-            "env": {"GOOS": "windows", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-windows-arm64.exe"),
-        },
-        {
-            "env": {"GOOS": "darwin", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-macos-x86_64"),
-        },
-        {
-            "env": {"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-macos-arm64"),
-        },
-        {
-            "env": {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-linux-x86_64"),
-        },
-        {
-            "env": {"GOOS": "linux", "GOARCH": "arm64", "CGO_ENABLED": "0"},
-            "output": os.path.join(f"v{client_version}", "blenderkit-client-linux-arm64"),
-        },
-    ]
-    ldflags = f"-X main.ClientVersion={client_version}"
-    for build in builds:
-        build_path = os.path.join(build_dir, build["output"])
-        env = {**build["env"], **os.environ}
-        process = subprocess.Popen(
-            ["go", "build", "-o", build_path, "-ldflags", ldflags, "."],
-            env=env,
-            cwd=CLIENT_SRC_DIR,
+    result = subprocess.run(
+        [sys.executable, "dev.py", "build", "--out", client_dir],
+        cwd=CLIENT_SUBMODULE_DIR,
+    )
+    if result.returncode != 0:
+        print("Client build failed")
+        sys.exit(1)
+
+    zip_path = os.path.join(client_dir, f"v{client_version}", CLIENT_RELEASE_ASSET)
+    if not os.path.isfile(zip_path):
+        print(f"error: expected client bundle {zip_path} not found after build.")
+        sys.exit(1)
+    version = _unpack_client_bundle(zip_path, client_dir)
+    os.remove(zip_path)
+    print(f"Blendkit-Client {version} built and unpacked into {client_dir}")
+
+
+def _github_headers() -> dict:
+    """Headers for GitHub API/download requests (honours ``$GITHUB_TOKEN``)."""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "bk_maya-dev",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def download_client_release(client_dir: str, tag: str | None = None) -> str:
+    """Download the signed ``bk_client.zip`` from the bk_client GitHub releases.
+
+    Fetches the ``bk_client.zip`` asset of the latest release (or the release
+    tagged *tag*) and unpacks it into *client_dir*. This is how ``release``
+    ships correctly code-signed/notarized binaries — signing happens in the
+    bk_client repo's CI, so we never sign locally. See
+    https://github.com/BlenderKit/bk_client/releases.
+
+    Returns the unpacked client version (``vX.Y.Z``).
+    """
+    if tag:
+        api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases/tags/{tag}"
+    else:
+        api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases/latest"
+
+    print(f"Fetching bk_client release metadata: {api_url}")
+    request = urllib.request.Request(api_url, headers=_github_headers())
+    with urllib.request.urlopen(request) as response:
+        release = json.load(response)
+
+    asset_url = None
+    for asset in release.get("assets", []):
+        if asset.get("name") == CLIENT_RELEASE_ASSET:
+            asset_url = asset.get("browser_download_url")
+            break
+    if not asset_url:
+        published = release.get("tag_name", tag or "latest")
+        print(
+            f"error: bk_client release '{published}' has no {CLIENT_RELEASE_ASSET} asset yet.\n"
+            f"       Publish a zipped release, or pass --client-build <bk_client.zip> "
+            "with a locally downloaded signed bundle."
         )
-        build["process"] = process
+        sys.exit(1)
 
-    print(f"Blendkit-Client v{client_version} build started for {len(builds)} platforms.")
-    builds_ok = True
-    for build in builds:
-        build["process"].wait()
-        if build["process"].returncode != 0:
-            print(f"Client build ({build['env']}) failed")
-            builds_ok = False
+    os.makedirs(client_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = os.path.join(tmp, CLIENT_RELEASE_ASSET)
+        print(f"Downloading {asset_url}")
+        request = urllib.request.Request(asset_url, headers=_github_headers())
+        with urllib.request.urlopen(request) as response, open(zip_path, "wb") as fh:
+            shutil.copyfileobj(response, fh)
+        version = _unpack_client_bundle(zip_path, client_dir)
+    print(f"Blendkit-Client {version} downloaded and unpacked into {client_dir}")
+    return version
 
-    if not builds_ok:
-        exit(1)
-    print(f"Blendkit-Client v{client_version} builds completed.")
+
+def install_local_client_bundle(bundle_path: str, client_dir: str) -> str:
+    """Unpack a locally downloaded signed ``bk_client.zip`` into *client_dir*.
+
+    *bundle_path* may point either at the ``bk_client.zip`` file itself or at a
+    directory that contains it. The extracted binaries are verified afterwards so
+    a mis-signed bundle fails the release early.
+
+    Returns the unpacked client version (``vX.Y.Z``).
+    """
+    if os.path.isdir(bundle_path):
+        candidate = os.path.join(bundle_path, CLIENT_RELEASE_ASSET)
+        if os.path.isfile(candidate):
+            bundle_path = candidate
+    if not os.path.isfile(bundle_path):
+        print(
+            f"error: local client bundle {bundle_path} not found "
+            f"(expected a {CLIENT_RELEASE_ASSET} file or a directory containing it)."
+        )
+        sys.exit(1)
+
+    os.makedirs(client_dir, exist_ok=True)
+    version = _unpack_client_bundle(bundle_path, client_dir)
+    verify_client_binaries(os.path.join(client_dir, version))
+    print(f"Blendkit-Client {version} installed from {bundle_path}")
+    return version
 
 
 def verify_client_binaries(binaries_path: str):
@@ -190,7 +312,7 @@ def verify_client_binaries(binaries_path: str):
     print("===== VERIFYING CLIENT BINARIES =====")
     signatures_ok = True
     files = os.listdir(binaries_path)
-    client_files = [f for f in files if f.startswith("blenderkit-client")]
+    client_files = [f for f in files if f.startswith("bk_client")]
     for file_name in client_files:
         print(f"\n\n==={file_name}")
         file_path = os.path.join(binaries_path, file_name)
@@ -262,107 +384,6 @@ def verify_client_binaries(binaries_path: str):
         exit(1)
 
     print("\n>>>>> Verification OK for all files!\n\n")
-
-
-def _iter_version_dirs(root: str):
-    """Yield ``(version_tuple, name, abspath)`` for ``vX.Y.Z`` folders in *root*."""
-    if not os.path.isdir(root):
-        return
-    for name in os.listdir(root):
-        if not name.startswith("v"):
-            continue
-        path = os.path.join(root, name)
-        if not os.path.isdir(path):
-            continue
-        try:
-            version = tuple(int(p) for p in name[1:].split("."))
-        except ValueError:
-            continue
-        yield version, name, path
-
-
-def find_prebuilt_client_binaries() -> str | None:
-    """Return the newest folder of prebuilt client binaries, or ``None``.
-
-    Looks inside the bk_client submodule — both ``bk_client/client/vX.Y.Z`` (if
-    the client repo commits binaries) and ``bk_client/out/vX.Y.Z`` (a local
-    ``dev.py build`` in the submodule). Picks the highest version that actually
-    contains ``blenderkit-client`` binaries, so releases always grab the latest
-    available without pinning a version. Returns ``None`` when nothing is found,
-    which lets the caller fall back to building from source.
-    """
-    search_roots = [
-        CLIENT_SRC_DIR,
-        os.path.join(CLIENT_SUBMODULE_DIR, "out"),
-    ]
-    best: tuple[tuple[int, ...], str] | None = None
-    for root in search_roots:
-        for version, _name, path in _iter_version_dirs(root):
-            has_binaries = any(f.startswith("blenderkit-client") for f in os.listdir(path))
-            if not has_binaries:
-                continue
-            if best is None or version > best[0]:
-                best = (version, path)
-    return best[1] if best else None
-
-
-def copy_client_binaries(binaries_path: str, addon_build_dir: str):
-    if not os.path.exists(binaries_path):
-        print(f"Client binaries path {binaries_path} does not exist, exiting.")
-        exit(1)
-    if not os.path.isdir(binaries_path):
-        print(f"Client binaries path {binaries_path} is not a directory, exiting.")
-        exit(1)
-
-    # The binaries folder name (``vX.Y.Z``) is authoritative for the packaged
-    # version — we intentionally do not pin to a single VERSION here so a newer
-    # prebuilt client is picked up automatically. Warn if it disagrees with the
-    # submodule's VERSION file, but do not fail the build.
-    client_version = os.path.basename(os.path.normpath(binaries_path))
-    version_file = os.path.join(CLIENT_SRC_DIR, "VERSION")
-    if os.path.isfile(version_file):
-        with open(version_file) as f:
-            expected_client_version = f"v{f.read().strip()}"
-        if client_version != expected_client_version:
-            print(
-                f"warning: client binaries version {client_version} differs from "
-                f"submodule VERSION {expected_client_version}; using {client_version}."
-            )
-
-    target_dir = os.path.join(addon_build_dir, "client", client_version)
-    os.makedirs(target_dir)
-
-    files = os.listdir(binaries_path)
-    client_files = [f for f in files if f.startswith("blenderkit-client")]
-    for file_name in client_files:
-        source_file = os.path.join(binaries_path, file_name)
-        target_file = os.path.join(target_dir, file_name)
-        shutil.copy2(source_file, target_file)
-        print(f"Copied {source_file} to {target_file}")
-
-    print(f"Blendkit-Client binaries copied from {binaries_path} to {target_dir}")
-
-
-def copy_client_tools(addon_build_dir: str):
-    """Copy the client's Python export recipes into the packaged add-on.
-
-    The Go client shells out to ``client/tools/export_usd.py`` /
-    ``export_glb.py`` when handling downloads; ``bg_download.py`` locates them at
-    ``<addon_root>/client/tools/`` (see ``_find_export_usd_script``). The build
-    only assembles binaries under ``client/vX.Y.Z/``, so without this the
-    packaged add-on has no tools folder and USD/glTF exports fail.
-    """
-    tools_src = os.path.join(CLIENT_SRC_DIR, "tools")
-    if not os.path.isdir(tools_src):
-        print(f"warning: client tools dir {tools_src} not found; exports will be unavailable.")
-        return
-    tools_dst = os.path.join(addon_build_dir, "client", "tools")
-    shutil.copytree(
-        tools_src,
-        tools_dst,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
-    )
-    print(f"Copied client tools from {tools_src} to {tools_dst}")
 
 
 # ── Versioning ────────────────────────────────────────────────────────────────
@@ -498,7 +519,9 @@ def do_build(
     install_at=None,
     include_tests=False,
     clean_dir=None,
-    client_binaries_path=None,
+    client_source="build",
+    client_bundle=None,
+    release_tag=None,
     channel=CHANNEL_DEV,
     version=None,
 ):
@@ -527,9 +550,14 @@ def do_build(
     - include_tests: also copy the repo-level ``tests/`` directory into the build.
     - clean_dir: directory to wipe after building (e.g. cached client binaries
       under the user's Blendkit data dir).
-    - client_binaries_path: use pre-signed binaries from this directory instead
-      of rebuilding (``release`` command, and the future external signed-client
-      repo — see CLIENT_BINARIES_ENV at the top of this file).
+    - client_source: how to assemble ``client/``. ``"build"`` compiles the
+      client locally from the submodule (unsigned, debug); ``"download"`` pulls
+      the signed ``bk_client.zip`` from the bk_client GitHub releases;
+      ``"local"`` unpacks a locally supplied ``bk_client.zip`` (``client_bundle``).
+    - client_bundle: path to a local signed ``bk_client.zip`` (or a directory
+      containing it) used when ``client_source == "local"``.
+    - release_tag: optional bk_client release tag for ``client_source ==
+      "download"`` (defaults to the latest release).
     - channel: release channel (``stable`` / ``alpha`` / ``dev``) — controls the
       ``-alpha`` suffix and is recorded in the built package.
     - version: explicit full version override; otherwise computed from
@@ -548,17 +576,20 @@ def do_build(
     # in-place dev install and the packaged build see the same files.
     vendor_packages(_LIB_DIR)
 
-    if client_binaries_path is None:
-        blendkit_client_build(addon_build_dir)
+    # Assemble the ``client/`` folder (binaries + tools + icons). A local debug
+    # ``build`` compiles from the submodule; a ``release`` pulls the signed
+    # bk_client.zip (downloaded from GitHub, or a locally supplied bundle).
+    client_dir = os.path.join(addon_build_dir, "client")
+    if client_source == "download":
+        download_client_release(client_dir, tag=release_tag)
+    elif client_source == "local":
+        install_local_client_bundle(client_bundle, client_dir)
     else:
-        copy_client_binaries(client_binaries_path, addon_build_dir)
+        blendkit_client_build(addon_build_dir)
 
-    # Ship the client's Python export recipes (export_usd.py / export_glb.py)
-    # under client/tools/ so downloads that convert assets can find them.
-    copy_client_tools(addon_build_dir)
-
-    # Copy bk_maya/ Python sources (including vendored lib/ and the
-    # bk_proxor submodule contents). Drop dev/test artefacts from inside it.
+    # Copy bk_maya/ Python sources (including vendored lib/). The bk_proxor
+    # submodule is packaged separately below from its src/ layout, so exclude it
+    # here. Drop dev/test artefacts from inside the tree.
     bk_ignore = shutil.ignore_patterns(
         "__pycache__",
         "*.pyc",
@@ -568,11 +599,21 @@ def do_build(
         ".vscode",
         ".ruff_cache",
         "dev.py",
+        "bk_proxor",
     )
     shutil.copytree(
         "bk_maya",
         os.path.join(addon_build_dir, "bk_maya"),
         ignore=bk_ignore,
+    )
+
+    # Ship only the inner src-layout ``bk_proxor`` package as a flat
+    # ``bk_maya/bk_proxor`` — the submodule's scaffolding (src/ nesting, dev
+    # shim __init__, pyproject.toml, .git) is not needed at runtime.
+    shutil.copytree(
+        os.path.join("bk_maya", "bk_proxor", "src", "bk_proxor"),
+        os.path.join(addon_build_dir, "bk_maya", "bk_proxor"),
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
     )
 
     # Stamp the exact version into the *built* package (source tree stays clean).
@@ -642,11 +683,11 @@ parser.add_argument(
     default="build",
     choices=["build", "release", "vendor"],
     help="""
-  BUILD   = vendor lib/, build client binaries from the bk_client submodule
-            source, assemble out/blendkit and zip it (used for testing).
-  RELEASE = like BUILD but grabs prebuilt client binaries when available
-            (--client-build signed folder, else the newest binaries committed
-            in the bk_client submodule); falls back to building from source.
+  BUILD   = vendor lib/, build the client locally from the bk_client submodule
+            (unsigned), assemble out/blendkit and zip it (used for debug).
+  RELEASE = like BUILD but ships the SIGNED client: downloads bk_client.zip from
+            the bk_client GitHub releases (or --client-build for a local signed
+            bundle) instead of compiling.
   VENDOR  = (re)download pure-Python vendor packages into bk_maya/lib/.
   """,
 )
@@ -668,9 +709,18 @@ parser.add_argument(
     type=str,
     default=os.environ.get(CLIENT_BINARIES_ENV),
     help=(
-        "Path to a folder of prebuilt (signed) client binaries, named vX.Y.Z. "
-        "Binaries in this directory are used instead of building from source. "
-        f"Defaults to ${CLIENT_BINARIES_ENV} if set. Used by 'release'."
+        "Path to a locally downloaded signed bk_client.zip (or a directory "
+        "containing it). When set, 'release' unpacks this bundle instead of "
+        f"downloading from GitHub. Defaults to ${CLIENT_BINARIES_ENV} if set."
+    ),
+)
+parser.add_argument(
+    "--client-tag",
+    type=str,
+    default=None,
+    help=(
+        "bk_client GitHub release tag to download for 'release' (e.g. 'v1.10.0'). "
+        "Defaults to the latest published release."
     ),
 )
 parser.add_argument(
@@ -699,29 +749,31 @@ if args.command == "build":
     do_build(
         args.install_at,
         clean_dir=args.clean_dir,
-        client_binaries_path=args.client_build,
+        client_source="build",
         channel=args.channel,
         version=args.version,
     )
 elif args.command == "release":
-    # Prefer explicit signed binaries; verify their code-signing before use.
-    binaries_path = args.client_build
-    if binaries_path is not None:
-        verify_client_binaries(binaries_path)
+    # Ship signed binaries: use a locally supplied signed bundle when given,
+    # otherwise download the signed bk_client.zip from the GitHub releases.
+    if args.client_build is not None:
+        do_build(
+            args.install_at,
+            clean_dir=args.clean_dir,
+            client_source="local",
+            client_bundle=args.client_build,
+            channel=args.channel,
+            version=args.version,
+        )
     else:
-        # Grab the newest prebuilt binaries committed in the bk_client submodule.
-        binaries_path = find_prebuilt_client_binaries()
-        if binaries_path is not None:
-            print(f"Using prebuilt client binaries from submodule: {binaries_path}")
-        else:
-            print("No prebuilt client binaries found in submodule; building from source.")
-    do_build(
-        args.install_at,
-        clean_dir=args.clean_dir,
-        client_binaries_path=binaries_path,
-        channel=args.channel,
-        version=args.version,
-    )
+        do_build(
+            args.install_at,
+            clean_dir=args.clean_dir,
+            client_source="download",
+            release_tag=args.client_tag,
+            channel=args.channel,
+            version=args.version,
+        )
 elif args.command == "vendor":
     vendor_packages(_LIB_DIR)
 else:

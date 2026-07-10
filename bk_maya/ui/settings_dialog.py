@@ -290,7 +290,18 @@ class _FilesTab(QWidget):
     def apply(self) -> None:
         prefs.global_dir = self._dir_edit.text().strip()
         prefs.max_resolution = self._res_combo.currentData()
-        prefs.blender_exe = self._blender_edit.text().strip()
+        new_blender = self._blender_edit.text().strip()
+        blender_changed = new_blender != prefs.blender_exe
+        prefs.blender_exe = new_blender
+        # Publish a user-chosen Blender up to the Client so other plugins can
+        # reuse it (the Client is the shared source of truth for executables).
+        if blender_changed and new_blender:
+            try:
+                from ..core import client_settings
+
+                client_settings.publish_blender_executable(new_blender)
+            except Exception:
+                log.debug("Could not publish Blender executable to Client", exc_info=True)
 
 
 # endregion: Files
