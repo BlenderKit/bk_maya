@@ -3,14 +3,15 @@ name: Release
 # ─────────────────────────────────────────────────────────────────────────────
 # Produces a ready-to-use, zero-setup zip and publishes it to GitHub Releases.
 #
-#   • Every merge / push to `main`   → automatic ALPHA prerelease (rolling)
+#   • Every merge / push to `main`   → automatic ALPHA prerelease (versioned)
 #   • Every push to `master`         → STABLE release
 #   • Manual "Run workflow" button   → choose the channel yourself
 #
 # The version is computed by `bk_maya/dev.py` as  major.minor.YYMMDDHHmm
 # (with a `-alpha` suffix on the alpha channel) and is baked into the plugin
 # itself (bk_maya/_build_version.py) so users/admins can see exactly what they
-# have installed.
+# have installed. Both channels tag as `v<version>`; alpha tags just carry the
+# `-alpha` suffix (e.g. `v0.1.2607101129-alpha`) and are marked as pre-release.
 #
 # CLIENT BINARIES:
 #   The Go client lives in its own repo (BlenderKit/bk_client). `dev.py release`
@@ -87,28 +88,19 @@ jobs:
         id: artifact
         run: |
           BUILT="out/blendkit-maya-${{ steps.version.outputs.version }}.zip"
-          if [ "${{ steps.channel.outputs.channel }}" = "alpha" ]; then
-            # Stable filename so the rolling alpha release always overwrites it.
-            NAME="blendkit-maya-alpha.zip"
-          else
-            NAME="blendkit-maya-${{ steps.version.outputs.version }}.zip"
-          fi
+          NAME="blendkit-maya-${{ steps.version.outputs.version }}.zip"
           cp "$BUILT" "$NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      # ── ALPHA: one rolling prerelease, retagged to the latest main commit ──
-      - name: Move rolling `alpha` tag
-        if: steps.channel.outputs.channel == 'alpha'
-        run: |
-          git tag -f alpha
-          git push -f origin alpha
-
+      # ── ALPHA: a versioned pre-release, tagged like stable but with -alpha ──
+      # The built version already carries the `-alpha` suffix (e.g.
+      # 0.1.2607101129-alpha), so the tag is `v<version>` just like stable.
       - name: Publish alpha prerelease
         if: steps.channel.outputs.channel == 'alpha'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: alpha
-          name: "Alpha (rolling) — ${{ steps.version.outputs.version }}"
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "Blendkit-maya ${{ steps.version.outputs.version }}"
           prerelease: true
           body: |
             Automated **alpha** build from `main`.
