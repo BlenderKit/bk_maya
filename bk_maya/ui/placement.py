@@ -1193,8 +1193,9 @@ class _ProgressOverlay(QWidget):  # type: ignore
     is always visible while a download runs.
     """
 
-    _W = 340
+    _MIN_W = 240  # px — minimum card width
     _H = 52
+    _H_PAD = 22  # px — horizontal text padding (each side)
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -1210,13 +1211,22 @@ class _ProgressOverlay(QWidget):  # type: ignore
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(Qt.NoFocus)
-        self.resize(self._W, self._H)
+        self.resize(self._MIN_W, self._H)
         self._text = ""
         self._frac: float | None = None
 
     def set_progress(self, text: str, frac: float | None = None) -> None:
         self._text = text or ""
         self._frac = frac
+        # Grow the card to fit the full text so nothing is clipped.
+        fm = self.fontMetrics()
+        try:
+            tw = fm.horizontalAdvance(self._text)
+        except AttributeError:  # Qt < 5.11
+            tw = fm.width(self._text)
+        new_w = max(self._MIN_W, tw + self._H_PAD * 2)
+        if new_w != self.width():
+            self.resize(new_w, self._H)
         self.update()
 
     def reposition(self) -> None:
@@ -1225,7 +1235,7 @@ class _ProgressOverlay(QWidget):  # type: ignore
             return
         try:
             gp = vp.mapToGlobal(QPoint(vp.width() // 2, 44))
-            self.move(int(gp.x()) - self._W // 2, int(gp.y()))
+            self.move(int(gp.x()) - self.width() // 2, int(gp.y()))
         except Exception:
             pass
 
