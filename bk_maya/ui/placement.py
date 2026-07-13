@@ -106,6 +106,96 @@ _hook_handle = None  # HHOOK
 _hook_proc_ref = None  # keep CFUNCTYPE alive
 _hook_installed = False
 
+# ── Raycast acceleration cache ────────────────────────────────────────────
+# ``_raycast_scene`` runs every ~16 ms cursor tick during a drag and would
+# otherwise iterate *every* mesh in the scene, calling ``closestIntersection``
+# with no acceleration structure.  As placed models accumulate, each new
+# placement raycasts against all previously imported geometry, so the drag
+# gets progressively laggier.  We cache a per-mesh uniform-grid acceleration
+# structure (keyed by DAG path) built once per drag, and skip meshes whose
+# world-space bounding box the ray never enters.  The cache is cleared at the
+# start of every drag so freshly imported / edited meshes are re-accelerated.
+_isect_accel_cache: dict = {}
+
+
+def _clear_raycast_cache() -> None:
+    """Drop cached intersection accelerators (call on each drag start)."""
+    _isect_accel_cache.clear()
+
+
+def _ray_hits_aabb(ox, oy, oz, dx, dy, dz, bmin, bmax) -> bool:
+    """Slab test: does the ray (origin + t·dir, t≥0) intersect the AABB?
+
+    ``dx/dy/dz`` need not be normalised.  Returns True on any hit or if the
+    ray origin is already inside the box.
+    """
+    tmin = 0.0
+    tmax = float("inf")
+    for o, d, lo, hi in (
+        (ox, dx, bmin[0], bmax[0]),
+        (oy, dy, bmin[1], bmax[1]),
+        (oz, dz, bmin[2], bmax[2]),
+    ):
+        if abs(d) < 1e-12:
+            # Ray parallel to this slab — miss if origin is outside it.
+            if o < lo or o > hi:
+                return False
+            continue
+        inv = 1.0 / d
+        t1 = (lo - o) * inv
+        t2 = (hi - o) * inv
+        if t1 > t2:
+            t1, t2 = t2, t1
+        tmin = max(tmin, t1)
+        tmax = min(tmax, t2)
+        if tmin > tmax:
+            return False
+    return tmax >= 0.0
+
+
+def _ray_aabb_hit(ox, oy, oz, dx, dy, dz, bmin, bmax):
+    """Ray/AABB intersection returning ``(t_enter, face_normal)`` or ``None``.
+
+    ``t_enter`` is the distance along the (normalised) ray direction to the
+    first face struck; ``face_normal`` is that face's outward normal. Used to
+    project the placement helper onto USD-stage bounding boxes, which have no
+    Maya mesh to intersect.
+    """
+    tmin = 0.0
+    tmax = float("inf")
+    hit_axis = 0
+    hit_sign = -1.0
+    for axis, (o, d, lo, hi) in enumerate(
+        (
+            (ox, dx, bmin[0], bmax[0]),
+            (oy, dy, bmin[1], bmax[1]),
+            (oz, dz, bmin[2], bmax[2]),
+        )
+    ):
+        if abs(d) < 1e-12:
+            if o < lo or o > hi:
+                return None
+            continue
+        inv = 1.0 / d
+        t1 = (lo - o) * inv
+        t2 = (hi - o) * inv
+        sign = -1.0  # entering through the low (min) face
+        if t1 > t2:
+            t1, t2 = t2, t1
+            sign = 1.0  # entering through the high (max) face
+        if t1 > tmin:
+            tmin = t1
+            hit_axis = axis
+            hit_sign = sign
+        tmax = min(tmax, t2)
+        if tmin > tmax:
+            return None
+    if tmax < 0.0:
+        return None
+    normal = [0.0, 0.0, 0.0]
+    normal[hit_axis] = hit_sign
+    return tmin, (normal[0], normal[1], normal[2])
+
 
 class _MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -478,14 +568,61 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool, str]
                     it.next()
                     continue
 
+                # ── Broadphase: skip meshes whose world AABB the ray misses.
+                # A cheap ray/AABB slab test rejects the vast majority of
+                # already-placed models (they sit away from the cursor ray),
+                # so we never pay for a full mesh intersection on them.
+                dag_key = dag_path.fullPathName()
+                try:
+                    fn_dag = om2.MFnDagNode(dag_path)
+                    obb = fn_dag.boundingBox
+                    obb.transformUsing(dag_path.inclusiveMatrix())
+                    bmn = obb.min
+                    bmx = obb.max
+                    if not _ray_hits_aabb(
+                        ray_src.x,
+                        ray_src.y,
+                        ray_src.z,
+                        ray_dir.x,
+                        ray_dir.y,
+                        ray_dir.z,
+                        (bmn.x, bmn.y, bmn.z),
+                        (bmx.x, bmx.y, bmx.z),
+                    ):
+                        it.next()
+                        continue
+                except Exception:
+                    pass  # If the AABB test fails, fall through to full test.
+
                 fn = om2.MFnMesh(dag_path)
-                result = fn.closestIntersection(
-                    ray_src,
-                    ray_dir,
-                    om2.MSpace.kWorld,
-                    9999999.0,  # maxParam
-                    False,  # testBothDirections
-                )
+
+                # ── Cached uniform-grid accelerator for this mesh ──────────
+                accel = _isect_accel_cache.get(dag_key)
+                if accel is None:
+                    try:
+                        accel = fn.autoUniformGridParams()
+                        _isect_accel_cache[dag_key] = accel
+                    except Exception:
+                        accel = None
+
+                try:
+                    result = fn.closestIntersection(
+                        ray_src,
+                        ray_dir,
+                        om2.MSpace.kWorld,
+                        9999999.0,  # maxParam
+                        False,  # testBothDirections
+                        accelParams=accel,
+                    )
+                except Exception:
+                    # Older bindings may not accept the keyword — retry plain.
+                    result = fn.closestIntersection(
+                        ray_src,
+                        ray_dir,
+                        om2.MSpace.kWorld,
+                        9999999.0,
+                        False,
+                    )
                 if result is not None:
                     hit_pt = result[0]
                     hit_face = int(result[2]) if len(result) > 2 else -1
@@ -527,6 +664,60 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool, str]
                 pass
             it.next()
 
+        # ── USD stages (mayaUsdProxyShape) ────────────────────────────────
+        # Staged assets (import method = "stage") are proxy shapes, not Maya
+        # meshes, so the MItDag(kMesh) loop above never sees them.  Project the
+        # ray onto each stage's world bounding box so the placement helper can
+        # still land on top of / against staged geometry.  Bounding-box level
+        # (not surface-exact) but fast and keeps "both at the same time".
+        try:
+            import maya.cmds as _cmds
+
+            proxies = _cmds.ls(type="mayaUsdProxyShape", long=True) or []
+        except Exception:
+            proxies = []
+        for shape in proxies:
+            try:
+                sel = om2.MSelectionList()
+                sel.add(shape)
+                dag_path = sel.getDagPath(0)
+                if not dag_path.isVisible():
+                    continue
+                fn_dag = om2.MFnDagNode(dag_path)
+                obb = fn_dag.boundingBox
+                obb.transformUsing(dag_path.inclusiveMatrix())
+                bmn = obb.min
+                bmx = obb.max
+                hit = _ray_aabb_hit(
+                    ray_src.x,
+                    ray_src.y,
+                    ray_src.z,
+                    ray_dir.x,
+                    ray_dir.y,
+                    ray_dir.z,
+                    (bmn.x, bmn.y, bmn.z),
+                    (bmx.x, bmx.y, bmx.z),
+                )
+                if hit is None:
+                    continue
+                t_enter, nrm = hit
+                if not (0.001 < t_enter < closest_dist):
+                    continue
+                closest_dist = t_enter
+                best_hit = (
+                    float(near_pt.x + t_enter * ray_dir.x),
+                    float(near_pt.y + t_enter * ray_dir.y),
+                    float(near_pt.z + t_enter * ray_dir.z),
+                )
+                best_node = shape
+                # Flip the face normal toward the camera so a side/bottom hit
+                # doesn't invert the placed asset.
+                if (nrm[0] * ray_dir.x + nrm[1] * ray_dir.y + nrm[2] * ray_dir.z) > 0.0:
+                    nrm = (-nrm[0], -nrm[1], -nrm[2])
+                best_normal = nrm
+            except Exception:
+                continue
+
         if best_hit:
             return True, best_hit, (best_normal or floor_normal), False, best_node
 
@@ -553,6 +744,41 @@ def _raycast_scene(vp_x: int, vp_y: int) -> tuple[bool, tuple, tuple, bool, str]
         log.debug("Raycast error: %s", exc)
 
     return False, (0.0, 0.0, 0.0), floor_normal, False, ""
+
+
+def _project_cursor_to_floor(vp_x: int, vp_y: int) -> tuple[float, float, float]:
+    """Project the cursor ray onto the Y=0 floor plane, ignoring geometry.
+
+    Used by the Alt "drop to floor" placement mode. Returns the world point
+    where the eye ray through pixel (vp_x, vp_y) crosses Y=0; if the ray is
+    parallel to the floor, projects the eye-line forward instead.
+    """
+    try:
+        import maya.api.OpenMaya as om2
+        import maya.api.OpenMayaUI as omui2
+
+        view = omui2.M3dView.active3dView()
+        vp_h = view.portHeight()
+        maya_y = vp_h - vp_y  # Qt top-down → Maya bottom-up
+
+        near_pt = om2.MPoint()
+        far_pt = om2.MPoint()
+        view.viewToWorld(int(vp_x), int(maya_y), near_pt, far_pt)
+
+        ox, oy, oz = near_pt.x, near_pt.y, near_pt.z
+        dx = far_pt.x - near_pt.x
+        dy = far_pt.y - near_pt.y
+        dz = far_pt.z - near_pt.z
+        if abs(dy) > 1e-9:
+            t = -oy / dy
+            if t > 0:
+                return (ox + t * dx, 0.0, oz + t * dz)
+        # Ray parallel to the floor — project forward so the helper stays visible.
+        t = 1000.0
+        return (ox + t * dx, oy + t * dy, oz + t * dz)
+    except Exception as exc:
+        log.debug("floor projection failed: %s", exc)
+        return (0.0, 0.0, 0.0)
 
 
 def _refresh_viewport(*, light: bool = False) -> None:
@@ -958,6 +1184,106 @@ class _DragOverlay(QWidget):  # type: ignore
             p.end()
 
 
+class _ProgressOverlay(QWidget):  # type: ignore
+    """Frameless, click-through progress card pinned to the viewport top.
+
+    Used for downloads that have no 3D gizmo to carry their progress text
+    (HDRIs become world-level environment lights). Unlike ``inViewMessage``
+    this does not depend on Maya's "In-view Messages" HUD preference, so it
+    is always visible while a download runs.
+    """
+
+    _W = 340
+    _H = 52
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        flags = Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        no_focus = getattr(Qt, "WindowDoesNotAcceptFocus", None)
+        if no_focus is not None:
+            flags |= no_focus
+        transparent = getattr(Qt, "WindowTransparentForInput", None)
+        if transparent is not None:
+            flags |= transparent
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.resize(self._W, self._H)
+        self._text = ""
+        self._frac: float | None = None
+
+    def set_progress(self, text: str, frac: float | None = None) -> None:
+        self._text = text or ""
+        self._frac = frac
+        self.update()
+
+    def reposition(self) -> None:
+        vp = _get_viewport_widget()
+        if vp is None:
+            return
+        try:
+            gp = vp.mapToGlobal(QPoint(vp.width() // 2, 44))
+            self.move(int(gp.x()) - self._W // 2, int(gp.y()))
+        except Exception:
+            pass
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            rect = self.rect().adjusted(1, 1, -1, -1)
+            p.setBrush(QColor(25, 25, 25, 210))
+            p.setPen(QPen(QColor(41, 107, 214, 235), 2))
+            p.drawRoundedRect(rect, 10, 10)
+            # Determinate progress bar along the bottom edge.
+            if self._frac is not None:
+                frac = max(0.0, min(1.0, self._frac))
+                bar = rect.adjusted(8, rect.height() - 10, -8, -6)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(70, 70, 70, 200))
+                p.drawRoundedRect(bar, 3, 3)
+                if frac > 0.0:
+                    fill = bar.adjusted(0, 0, -int(bar.width() * (1.0 - frac)), 0)
+                    p.setBrush(QColor(41, 107, 214, 255))
+                    p.drawRoundedRect(fill, 3, 3)
+            p.setPen(QPen(QColor(235, 235, 235, 255)))
+            p.drawText(rect.adjusted(12, 0, -12, -8 if self._frac is not None else 0), Qt.AlignCenter, self._text)
+        finally:
+            p.end()
+
+
+_progress_overlay: _ProgressOverlay | None = None
+
+
+def show_progress(text: str, frac: float | None = None) -> None:
+    """Show/update the viewport progress card (creates it on first call)."""
+    if not _QT:
+        return
+    global _progress_overlay
+    try:
+        if _progress_overlay is None:
+            _progress_overlay = _ProgressOverlay()
+        _progress_overlay.set_progress(text, frac)
+        _progress_overlay.reposition()
+        if not _progress_overlay.isVisible():
+            _progress_overlay.show()
+        _progress_overlay.raise_()
+    except Exception as exc:
+        log.debug("show_progress failed: %s", exc)
+
+
+def hide_progress() -> None:
+    """Hide the viewport progress card if it is showing."""
+    global _progress_overlay
+    if _progress_overlay is not None:
+        try:
+            _progress_overlay.hide()
+        except Exception:
+            pass
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Drag session (singleton Qt event filter)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -996,6 +1322,10 @@ class DragSession(QObject):  # type: ignore
             return
         self._delay_locator = delay_locator
         self._drop_fired = False
+        # Rebuild the raycast accelerator cache for this drag so any meshes
+        # imported by previous placements are re-accelerated (and stale
+        # entries dropped).
+        _clear_raycast_cache()
         # Materials are applied to an existing mesh under the cursor — no
         # bounding-box helper / proxor wireframe is shown for them.
         is_material = _is_material_asset(asset_data)
@@ -1236,6 +1566,9 @@ class DragSession(QObject):  # type: ignore
                 hint = (
                     f"<b>{asset_data.get('name', 'Asset')}</b>  "
                     "&nbsp;|&nbsp;  Wheel: rotate  "
+                    "&nbsp;|&nbsp;  Shift: 45&deg; snap  "
+                    "&nbsp;|&nbsp;  Ctrl: keep upright  "
+                    "&nbsp;|&nbsp;  Alt: drop to floor  "
                     "&nbsp;|&nbsp;  LMB: place  "
                     "&nbsp;|&nbsp;  RMB / ESC: cancel"
                 )
@@ -1330,16 +1663,38 @@ class DragSession(QObject):  # type: ignore
             self._poll_hdri()
             return
 
+        # ── Placement modifier keys ───────────────────────────────────────
+        #   Shift → snap rotation to 45° increments (resets to 0 on press)
+        #   Ctrl  → place at the surface point but keep the asset upright
+        #           (ignore the surface normal)
+        #   Alt   → drop straight to the Y=0 floor, ignoring geometry
+        try:
+            mods = QApplication.keyboardModifiers()
+            shift_held = bool(mods & Qt.ShiftModifier)
+            ctrl_held = bool(mods & Qt.ControlModifier)
+            alt_held = bool(mods & Qt.AltModifier)
+        except Exception:
+            shift_held = ctrl_held = alt_held = False
+
         # ── 2. Consume wheel notches from the LL hook ─────────────────────
         # _wheel_accum is updated on the hook thread; one drain per tick.
         # 1 notch = 120 raw units.
         wheel = _drain_wheel_accum()
         rotation_changed = False
+        # Shift just pressed → reset rotation to zero, then snap in 45° steps.
+        if shift_held and not getattr(self, "_shift_prev", False) and _active_state.rotation_y != 0.0:
+            _active_state.rotation_y = 0.0
+            rotation_changed = True
+        self._shift_prev = shift_held
         if wheel != 0:
             # Wheel-up = positive raw delta on Windows. Negate so wheel-up
             # rotates the gizmo in the natural "away from camera" direction
             # around its local +Y / surface normal.
-            _active_state.rotation_y -= (wheel / 120.0) * WHEEL_STEP
+            step = 45.0 if shift_held else WHEEL_STEP
+            _active_state.rotation_y -= (wheel / 120.0) * step
+            if shift_held:
+                # Snap to the nearest 45° so the increments stay exact.
+                _active_state.rotation_y = round(_active_state.rotation_y / 45.0) * 45.0
             rotation_changed = True
 
         # ── 3. Cursor position → raycast ──────────────────────────────────
@@ -1379,7 +1734,11 @@ class DragSession(QObject):  # type: ignore
         position_changed = False
         last_px = getattr(self, "_last_cursor_px", None)
         cur_px = (local.x(), local.y(), inside)
-        if inside and cur_px != last_px:
+        # Ctrl/Alt change how the point is resolved, so recompute when they
+        # toggle even if the cursor itself hasn't moved.
+        place_mods = (ctrl_held, alt_held)
+        last_mods = getattr(self, "_last_place_mods", None)
+        if inside and (cur_px != last_px or place_mods != last_mods):
             # Qt reports cursor coords in logical pixels, but M3dView's
             # viewToWorld()/portHeight() operate in physical/device pixels.
             # On Retina/HiDPI displays (devicePixelRatio > 1, common on macOS)
@@ -1389,7 +1748,20 @@ class DragSession(QObject):  # type: ignore
                 dpr = vp.devicePixelRatioF()
             except Exception:
                 dpr = 1.0
-            has_hit, loc, normal, on_floor, _hit_node = _raycast_scene(round(local.x() * dpr), round(local.y() * dpr))
+            dev_x = round(local.x() * dpr)
+            dev_y = round(local.y() * dpr)
+            if alt_held:
+                # Alt → drop to the floor, ignoring all geometry.
+                loc = _project_cursor_to_floor(dev_x, dev_y)
+                normal = (0.0, 1.0, 0.0)
+                on_floor = True
+                has_hit = True
+            else:
+                has_hit, loc, normal, on_floor, _hit_node = _raycast_scene(dev_x, dev_y)
+                if ctrl_held:
+                    # Ctrl → keep the hit position but stand the asset upright
+                    # (ignore the surface normal).
+                    normal = (0.0, 1.0, 0.0)
             if (
                 loc != _active_state.location
                 or has_hit != _active_state.has_hit
@@ -1402,6 +1774,7 @@ class DragSession(QObject):  # type: ignore
                 _active_state.surface_normal = normal
                 position_changed = True
         self._last_cursor_px = cur_px
+        self._last_place_mods = place_mods
 
         # ── 4. Push only what changed to the locator node ─────────────────
         if not (position_changed or rotation_changed):

@@ -1255,13 +1255,35 @@ class SearchBar(QWidget):
                 pill.setChecked(True)
         pills_row.addStretch()
         layout.addLayout(pills_row)
-        # Switching tabs immediately fires a new search
-        self._pill_group.buttonToggled.connect(lambda btn, checked: self._emit() if checked else None)
+        # Per-tab search text: each asset type keeps its own query so switching
+        # tabs doesn't carry (and re-run) another tab's search. Defaults blank.
+        self._active_type = "model"
+        self._queries: dict[str, str] = {}
+        # Switching tabs restores that tab's remembered query and searches it.
+        self._pill_group.buttonToggled.connect(self._on_pill_toggled)
+
+    def _on_pill_toggled(self, btn, checked: bool) -> None:
+        if not checked:
+            return
+        new_type = btn.property("asset_type")
+        if new_type == self._active_type:
+            return
+        # Stash the text typed for the tab we're leaving.
+        self._queries[self._active_type] = self._input.text().strip()
+        self._active_type = new_type
+        # Restore this tab's own query (blank if it was never searched).
+        self._input.blockSignals(True)
+        self._input.setText(self._queries.get(new_type, ""))
+        self._input.blockSignals(False)
+        self._emit()
 
     def _emit(self) -> None:
         checked = self._pill_group.checkedButton()
         asset_type = checked.property("asset_type") if checked else "model"
-        self.search_requested.emit(self._input.text().strip(), asset_type)
+        query = self._input.text().strip()
+        # Remember this tab's query so it persists across tab switches.
+        self._queries[asset_type] = query
+        self.search_requested.emit(query, asset_type)
 
     @property
     def current_query(self) -> str:

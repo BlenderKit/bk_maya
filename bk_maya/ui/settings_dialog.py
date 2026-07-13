@@ -45,6 +45,11 @@ from ..core.prefs import prefs
 log = logging.getLogger(__name__)
 
 _MAX_RESOLUTION_OPTIONS = ["512", "1024", "2048", "4096", "8192", "ORIGINAL"]
+_IMPORT_METHOD_OPTIONS = [
+    ("import", "Import (merge geometry)"),
+    ("reference", "Reference (link file)"),
+    ("stage", "USD Stage (mayaUsdProxyShape)"),
+]
 _PROXY_OPTIONS = [
     ("SYSTEM", "System — use OS networking settings"),
     ("ENVIRONMENT", "Environment — use HTTPS_PROXY variable"),
@@ -205,6 +210,33 @@ class _FilesTab(QWidget):
         self._res_combo.setCurrentIndex(current_idx)
         layout.addWidget(self._res_combo)
 
+        # ── Import method ──────────────────────────────────────────────────
+        layout.addWidget(_section("Import Method"))
+        layout.addWidget(_hr())
+        layout.addWidget(
+            _note(
+                "How dropped models enter the scene. Import merges the geometry, "
+                "Reference links an editable/unloadable file reference, and USD "
+                "Stage loads a native Maya USD stage (mayaUsdProxyShape).",
+            ),
+        )
+        layout.addWidget(
+            _note(
+                "Note: in USD Stage mode, dropping onto an already-placed stage "
+                "snaps to its bounding box, not the exact surface (stages have "
+                "no Maya mesh to ray-cast against).",
+            ),
+        )
+
+        self._import_method_combo = QComboBox()
+        for value, label in _IMPORT_METHOD_OPTIONS:
+            self._import_method_combo.addItem(label, userData=value)
+        _im_values = [v for v, _ in _IMPORT_METHOD_OPTIONS]
+        self._import_method_combo.setCurrentIndex(
+            _im_values.index(prefs.import_method) if prefs.import_method in _im_values else 0,
+        )
+        layout.addWidget(self._import_method_combo)
+
         # ── Blender executable ────────────────────────────────────────────
         layout.addWidget(_section("Blender Executable"))
         layout.addWidget(_hr())
@@ -314,6 +346,7 @@ class _FilesTab(QWidget):
     def apply(self) -> None:
         prefs.global_dir = self._dir_edit.text().strip()
         prefs.max_resolution = self._res_combo.currentData()
+        prefs.import_method = self._import_method_combo.currentData()
         new_blender = self._blender_edit.text().strip()
         blender_changed = new_blender != prefs.blender_exe
         prefs.blender_exe = new_blender
