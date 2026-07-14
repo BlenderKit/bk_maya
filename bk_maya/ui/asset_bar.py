@@ -30,7 +30,6 @@ import maya.cmds as cmds
 from qtpy.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QCursor, QPixmap
 from qtpy.QtWidgets import (
-    QAction,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -41,7 +40,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
-    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -199,7 +197,7 @@ def _ensure_poller() -> _ReportPoller:
 class AssetDetailDialog(QDialog):
     """Non-modal detail popup — shows asset metadata and thumbnail."""
 
-    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None, thumb_path: str = "") -> None:
         super().__init__(parent)
         self._asset = asset
         self.setWindowTitle(asset.get("name", "Asset detail"))
@@ -228,15 +226,15 @@ class AssetDetailDialog(QDialog):
 
         asset_id = asset.get("assetBaseId") or asset.get("id", "")
         tempdir = bk_search.get_tempdir(asset.get("assetType") or "model")
-        thumb_url = asset.get("thumbnailSmallUrlWebp") or asset.get("thumbnailSmallUrl") or ""
-        basename = thumb_url.rsplit("/", 1)[-1].split("?", 1)[0]
-        cached = os.path.join(tempdir, basename) if basename else ""
-        if cached and os.path.exists(cached):
-            pix = QPixmap(cached)
-            if not pix.isNull():
-                thumb_lbl.setPixmap(pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-            else:
-                thumb_lbl.setPixmap(bk_icons.notready_pixmap(128))
+        # Prefer the thumbnail the tile already resolved; otherwise probe the
+        # client's cache (basenames may be URL-encoded, e.g. "," → "%2C").
+        pix = QPixmap(thumb_path) if thumb_path and os.path.exists(thumb_path) else QPixmap()
+        if pix.isNull():
+            cached = AssetTile._find_cached_thumb(tempdir, asset)
+            if cached:
+                pix = QPixmap(cached)
+        if not pix.isNull():
+            thumb_lbl.setPixmap(pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         else:
             thumb_lbl.setPixmap(bk_icons.notready_pixmap(128))
 
@@ -526,6 +524,7 @@ class AssetTile(QFrame):
 
         self._asset: dict[str, Any] = {}
         self._asset_id: str = ""
+        self._bookmark_id: str = ""
         self._thumb_path: str = ""
         self._is_placeholder: bool = True
         self._thumb_sz: int = max(32, cell_w - 8)
@@ -596,6 +595,9 @@ class AssetTile(QFrame):
         self._is_placeholder = False
         self._asset = asset
         self._asset_id = asset.get("assetBaseId", "") or asset.get("id", "")
+        # Ratings/bookmarks are keyed by the asset's specific ``id`` (the
+        # ``/assets/{id}/rating/`` endpoint 404s on an assetBaseId).
+        self._bookmark_id = asset.get("id", "") or asset.get("assetBaseId", "")
 
         name = asset.get("name", "Unnamed")
         self._name.setText(name[:30])
@@ -676,10 +678,10 @@ class AssetTile(QFrame):
         empty outline is shown only while the tile is hovered so the user can
         add one without cluttering the grid.
         """
-        if self._is_placeholder or not self._asset_id:
+        if self._is_placeholder or not self._bookmark_id:
             self._bookmark_badge.hide()
             return
-        marked = bk_bookmarks.is_bookmarked(self._asset_id)
+        marked = bk_bookmarks.is_bookmarked(self._bookmark_id)
         if marked:
             self._bookmark_badge.setPixmap(bk_icons.icon("bookmark_full", size=_BADGE_SIZE))
             self._bookmark_badge.setToolTip("Bookmarked — click to remove")
@@ -694,14 +696,14 @@ class AssetTile(QFrame):
             self._bookmark_badge.hide()
 
     def _toggle_bookmark(self) -> None:
-        if self._is_placeholder or not self._asset_id:
+        if self._is_placeholder or not self._bookmark_id:
             return
         if not auth.is_logged_in():
             bar = _current_bar
             if bar is not None:
                 bar.show_error("Please log in to bookmark assets.")
             return
-        bk_bookmarks.toggle(self._asset_id)
+        bk_bookmarks.toggle(self._bookmark_id)
         # Optimistic: reflect immediately (a listener also refreshes all tiles).
         self.refresh_bookmark_badge()
 
@@ -723,40 +725,12 @@ class AssetTile(QFrame):
     # ── Context menu ─────────────────────────────────────────────────────
 
     def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        # Right-click opens the asset detail window directly (author search,
+        # "View on Blendkit.com" and rating all live inside it).
         if not self._asset:
             return
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #2a2a2a; color: #dedede; border: 1px solid #444; }"
-            "QMenu::item:selected { background: #0078d4; }"
-        )
-
-        detail_act = QAction("Asset detail…", menu)
-        detail_act.triggered.connect(self._open_detail)
-        menu.addAction(detail_act)
-
-        if self._asset_id:
-            marked = bk_bookmarks.is_bookmarked(self._asset_id)
-            bm_act = QAction("Remove bookmark" if marked else "Bookmark", menu)
-            bm_act.triggered.connect(self._toggle_bookmark)
-            menu.addAction(bm_act)
-
-        author = self._asset.get("author") or {}
-        author_id = author.get("id")
-        bar = _current_bar
-        if author_id and bar is not None:
-            author_name = author.get("fullName", "") or "this author"
-            author_act = QAction(f"Search by {author_name}", menu)
-            author_act.triggered.connect(lambda: bar.search_by_author(int(author_id), author_name))
-            menu.addAction(author_act)
-
-        slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
-        if slug:
-            web_act = QAction("View on Blendkit.com", menu)
-            web_act.triggered.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
-            menu.addAction(web_act)
-
-        menu.exec(event.globalPos())
+        self._open_detail()
+        event.accept()
 
     # ── Mouse drag initiation ─────────────────────────────────────────────
 
@@ -794,7 +768,7 @@ class AssetTile(QFrame):
         super().mouseReleaseEvent(event)
 
     def _open_detail(self) -> None:
-        dlg = AssetDetailDialog(self._asset, parent=self.window())
+        dlg = AssetDetailDialog(self._asset, parent=self.window(), thumb_path=self._thumb_path)
         dlg.setWindowModality(Qt.NonModal)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.show_near_cursor()

@@ -1170,11 +1170,7 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                 continue
             result = task.get("result") or {}
             assets = result.get("results") or []
-            ids = {
-                a.get("assetBaseId") or a.get("id")
-                for a in assets
-                if isinstance(a, dict) and (a.get("assetBaseId") or a.get("id"))
-            }
+            ids = {a.get("id") for a in assets if isinstance(a, dict) and a.get("id")}
             from . import bookmarks
 
             try:
