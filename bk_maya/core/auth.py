@@ -400,4 +400,10 @@ def logout() -> None:
             log.warning("Client-side logout failed: %s", exc)
     _clear_tokens()
     _invalidate_user_id()
+    try:
+        from . import bookmarks
+
+        bookmarks.clear()
+    except Exception:
+        log.debug("Could not clear bookmarks on logout", exc_info=True)
     log.info("Logged out.")

@@ -661,6 +661,39 @@ def get_user_profile(api_key: str = "") -> None:
     _http_request("GET", f"{get_base_url()}/profiles/get_user_profile", body=body)
 
 
+# ── Ratings / bookmarks ──────────────────────────────────────────────────────
+
+
+def send_rating(asset_id: str, rating_type: str, rating_value: float, api_key: str = "") -> None:
+    """Send a rating for an asset via the client (fire-and-forget).
+
+    *rating_type* is one of ``"quality"``, ``"working_hours"`` or
+    ``"bookmarks"``.  For bookmarks, ``rating_value`` is ``1`` to bookmark and
+    ``0`` to remove it.  The outcome is reported on ``/report`` as a
+    ``ratings/send_rating`` task.
+    """
+    body = {
+        "addon_version": ADDON_VERSION,
+        "platform_version": platform.platform(),
+        "app_id": _app_id,
+        "api_key": api_key,
+        "asset_id": asset_id,
+        "rating_type": rating_type,
+        "rating_value": rating_value,
+    }
+    _http_request("POST", f"{get_base_url()}/ratings/send_rating", body=body)
+
+
+def get_bookmarks(api_key: str = "") -> None:
+    """Ask the client to fetch the logged-in user's bookmarked assets.
+
+    The result arrives on ``/report`` as a ``ratings/get_bookmarks`` task whose
+    ``result`` is a search-results dict (a ``results`` list of assets).
+    """
+    body = _minimal_report_data(api_key=api_key)
+    _http_request("GET", f"{get_base_url()}/ratings/get_bookmarks", body=body)
+
+
 # ── Search ──────────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -1129,3 +1162,26 @@ def dispatch_tasks(tasks: list[dict[str, Any]]) -> None:
                     client_settings.on_snapshot(snap)
                 except Exception:
                     log.exception("Settings snapshot apply raised")
+
+        elif ttype == "ratings/get_bookmarks":
+            if status != "finished":
+                if status == "error":
+                    log.debug("get_bookmarks failed: %s", task.get("message") or "")
+                continue
+            result = task.get("result") or {}
+            assets = result.get("results") or []
+            ids = {
+                a.get("assetBaseId") or a.get("id")
+                for a in assets
+                if isinstance(a, dict) and (a.get("assetBaseId") or a.get("id"))
+            }
+            from . import bookmarks
+
+            try:
+                bookmarks.on_bookmarks_loaded(ids)
+            except Exception:
+                log.exception("Bookmarks load handler raised")
+
+        elif ttype == "ratings/send_rating":
+            if status == "error":
+                log.warning("send_rating failed: %s", task.get("message") or "")

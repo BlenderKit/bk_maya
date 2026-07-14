@@ -68,6 +68,7 @@ def search(
     page_offset: int = 0,  # unused (kept for callers' compatibility)
     free_only: bool = False,
     my_assets_only: bool = False,
+    bookmarked_only: bool = False,
     quality_limit: int = 0,
     license_filter: str = "ANY",
     animated_only: bool = False,
@@ -127,6 +128,8 @@ def search(
         extra["designYear_lte"] = design_year_max
     if geometry_nodes:
         extra["modifiers"] = "nodes"
+    if bookmarked_only:
+        extra["bookmarks_rating"] = 1
     if extra_filters:
         extra.update(extra_filters)
 
