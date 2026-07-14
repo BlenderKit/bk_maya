@@ -1784,9 +1784,15 @@ class _LoginBanner(QWidget):
         self._lbl.setWordWrap(True)
         layout.addWidget(self._lbl, stretch=1)
 
+        # When True the primary button acts as a "Dismiss" (emits
+        # ``dismiss_clicked``) instead of starting a login. Set per-message by
+        # :meth:`show_error` so a non-login error banner doesn't open the
+        # browser when the user just wants to close it.
+        self._primary_is_dismiss = False
+
         self._login_btn = QPushButton("Log in")
         self._login_btn.setFixedWidth(70)
-        self._login_btn.clicked.connect(self.login_clicked)
+        self._login_btn.clicked.connect(self._on_primary_clicked)
         layout.addWidget(self._login_btn)
 
         self._settings_btn = QPushButton("Settings…")
@@ -1810,6 +1816,13 @@ class _LoginBanner(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._apply_info_style()
 
+    def _on_primary_clicked(self) -> None:
+        """Route the primary button to login or dismiss based on context."""
+        if self._primary_is_dismiss:
+            self.dismiss_clicked.emit()
+        else:
+            self.login_clicked.emit()
+
     def _apply_info_style(self) -> None:
         self.setStyleSheet("background: #334066;")
         self._lbl.setStyleSheet("color: #c8d0e0; font-size: 11px;")
@@ -1821,6 +1834,7 @@ class _LoginBanner(QWidget):
     def show_info(self, message: str = "Not logged in — some results may be limited.") -> None:
         self._lbl.setText(message)
         self._apply_info_style()
+        self._primary_is_dismiss = False
         self._login_btn.setVisible(True)
         self._login_btn.setText("Log in")
         self._login_btn.setEnabled(True)
@@ -1828,9 +1842,10 @@ class _LoginBanner(QWidget):
         self._logs_btn.setVisible(False)
         self._dismiss_btn.setVisible(False)
 
-    def show_error(self, message: str, *, retry_label: str = "Retry") -> None:
+    def show_error(self, message: str, *, retry_label: str = "Retry", primary_dismiss: bool = False) -> None:
         self._lbl.setText(message)
         self._apply_error_style()
+        self._primary_is_dismiss = primary_dismiss
         self._login_btn.setVisible(True)
         self._login_btn.setText(retry_label)
         self._login_btn.setEnabled(True)
@@ -2054,7 +2069,7 @@ class AssetBarWidget(QWidget):
         to the relevant tab; defaults to the Account tab.
         """
         self._settings_tab = settings_tab
-        self._login_banner.show_error(message, retry_label="Dismiss")
+        self._login_banner.show_error(message, retry_label="Dismiss", primary_dismiss=True)
         self._login_banner.setVisible(True)
 
     def _on_search(self, query: str, asset_type: str) -> None:
