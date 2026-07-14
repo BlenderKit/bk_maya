@@ -75,6 +75,12 @@ class _Prefs:
     blender_exe: str = ""
     """Path to blender executable.  Empty = auto-detect (Blender 5.0+ required)."""
 
+    import_method: str = "stage"
+    """How models are brought into the scene on drop.  One of:
+    ``import``    — merge the USD geometry into the current scene;
+    ``reference`` — link the USD as a Maya file reference (editable, unloadable);
+    ``stage``     — load the USD as a native Maya USD stage (mayaUsdProxyShape, default)."""
+
     # ── Search filters ─────────────────────────────────────────────────────
     search_texture_resolution: bool = False
     """Limit search results by texture resolution."""

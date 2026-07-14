@@ -25,6 +25,50 @@ proxor_mesh_registry: dict[str, list] = {}
 # Per-locator labels ({"name": str, "status": str}).
 label_registry: dict[str, dict[str, str]] = {}
 
+# Per-locator cancel callbacks. The download controller registers a
+# zero-arg callable here so the viewport [X] badge (drawn by the locator's
+# draw override) can be wired to an abort. The draw override only shows the
+# badge when a callback is present for its node.
+cancel_registry: dict[str, object] = {}
+
+
+def set_cancel_callback(node_name: str, cb) -> None:
+    if not node_name:
+        return
+    cancel_registry[node_name] = cb
+
+
+def clear_cancel_callback(node_name: str) -> None:
+    cancel_registry.pop(node_name, None)
+
+
+def get_cancel_callback(node_name: str):
+    return cancel_registry.get(node_name)
+
+
+def has_cancel_callback(node_name: str) -> bool:
+    return node_name in cancel_registry
+
+
+def gizmo_anchors(loc, bbox_min, bbox_max):
+    """Return world-space anchors for the gizmo's floating label + [X] badge.
+
+    Shared by the draw override (to place the text/badge) and the download
+    controller's click handler (to hit-test the badge), so both agree on
+    where the cancel button lives.
+
+    Returns ``(name_anchor, status_anchor, badge_anchor)`` as ``(x, y, z)``
+    tuples in world space.
+    """
+    cx, cy, cz = loc
+    height = max(1e-3, bbox_max[1] - bbox_min[1])
+    width = max(1e-3, bbox_max[0] - bbox_min[0])
+    top_y = bbox_max[1] + max(2.0, 0.05 * height)
+    name_anchor = (cx, cy + top_y, cz)
+    status_anchor = (cx, cy + top_y - max(1.5, 0.03 * height), cz)
+    badge_anchor = (cx + width * 0.5 + max(3.0, 0.12 * width), cy + top_y, cz)
+    return name_anchor, status_anchor, badge_anchor
+
 
 def set_label(node_name: str, *, name: str | None = None, status: str | None = None) -> None:
     if not node_name:

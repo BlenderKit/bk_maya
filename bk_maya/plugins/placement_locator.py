@@ -521,6 +521,7 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
             "proxor_mesh": proxor_mesh,
             "label_name": label_entry.get("name", ""),
             "label_status": label_entry.get("status", ""),
+            "node_name": node_name,
             "active": True,
         }
         return data
@@ -700,8 +701,8 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
         if label_name or label_status:
             # Anchor a little above the bbox top so text doesn't z-fight
             # with the wireframe.
-            top_y = bbox_max[1] + max(2.0, 0.05 * height)
-            anchor = om2.MPoint(cx, cy + top_y, cz)
+            name_anchor_t, status_anchor_t, badge_anchor_t = _state.gizmo_anchors((cx, cy, cz), bbox_min, bbox_max)
+            anchor = om2.MPoint(*name_anchor_t)
             try:
                 drawManager.setFontSize(12)
             except Exception:
@@ -710,13 +711,32 @@ class BkPlacementDrawOverride(omr2.MPxDrawOverride):
                 drawManager.setColor(om2.MColor((1.0, 1.0, 1.0, 1.0)))
                 drawManager.text(anchor, label_name, omr2.MUIDrawManager.kCenter)
             if label_status:
-                status_anchor = om2.MPoint(cx, cy + top_y - max(1.5, 0.03 * height), cz)
+                status_anchor = om2.MPoint(*status_anchor_t)
                 try:
                     drawManager.setFontSize(10)
                 except Exception:
                     pass
                 drawManager.setColor(om2.MColor((0.75, 0.85, 1.0, 1.0)))
                 drawManager.text(status_anchor, label_status, omr2.MUIDrawManager.kCenter)
+
+            # ── Floating [X] cancel badge ────────────────────────────────
+            # Shown only while a cancel callback is registered for this node
+            # (i.e. an abortable download is in flight). The click is handled
+            # by the download controller's viewport event filter, which
+            # hit-tests this same badge anchor.
+            node_name = snap.get("node_name", "")
+            try:
+                cancellable = bool(node_name) and _state.has_cancel_callback(node_name)
+            except Exception:
+                cancellable = False
+            if cancellable:
+                badge = om2.MPoint(*badge_anchor_t)
+                try:
+                    drawManager.setFontSize(13)
+                except Exception:
+                    pass
+                drawManager.setColor(om2.MColor((0.95, 0.25, 0.22, 1.0)))
+                drawManager.text(badge, "[X]", omr2.MUIDrawManager.kCenter)
 
         drawManager.endDrawable()
 

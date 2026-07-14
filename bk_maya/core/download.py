@@ -31,6 +31,14 @@ try:
 except ImportError:  # for unit tests outside Maya
     cmds = None  # type: ignore[assignment]
 
+try:  # Qt is only present inside Maya; guarded so unit tests still import.
+    from qtpy.QtCore import QEvent, QObject, Qt, QTimer
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QApplication
+except Exception:  # pragma: no cover - non-Maya import path
+    QObject = object  # type: ignore[assignment,misc]
+    QEvent = QCursor = QApplication = Qt = QTimer = None  # type: ignore[assignment]
+
 from . import auth
 from .blender_runner import (
     MIN_BLENDER_MAJOR,
@@ -49,6 +57,148 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _active_jobs: list[_DownloadController] = []
+
+
+# ---------------------------------------------------------------------------
+# Viewport cancel badge — a floating [X] next to each downloading gizmo.
+# A single app-wide Qt event filter hit-tests the badge of every in-flight
+# download on left-click and aborts the one under the cursor.
+# ---------------------------------------------------------------------------
+
+# Click tolerance around the badge centre, in device pixels.
+_BADGE_HIT_RADIUS_PX = 16.0
+
+_cancel_filter: QObject | None = None  # type: ignore[valid-type]
+
+
+def _refresh_active_view() -> None:
+    if cmds is None:
+        return
+    try:
+        import maya.api.OpenMayaUI as omui2
+
+        omui2.M3dView.active3dView().refresh(False, False)
+    except Exception:
+        try:
+            cmds.refresh(currentView=True)
+        except Exception:
+            pass
+
+
+def _try_cancel_at_cursor() -> bool:
+    """If the cursor is over a downloading gizmo's [X] badge, cancel it.
+
+    Returns True when a download was cancelled (and the click should be
+    swallowed), False otherwise.
+    """
+    if not _active_jobs or cmds is None or QCursor is None:
+        return False
+    try:
+        import maya.api.OpenMaya as om2
+        import maya.api.OpenMayaUI as omui2
+
+        from ..ui import placement as _pl
+        from . import locator_state
+    except Exception:
+        return False
+
+    vp = _pl._get_viewport_widget()
+    if vp is None:
+        return False
+    gp = QCursor.pos()
+    local = vp.mapFromGlobal(gp)
+    if not vp.rect().contains(local):
+        return False
+    try:
+        dpr = vp.devicePixelRatioF()
+    except Exception:
+        dpr = 1.0
+    click_x = local.x() * dpr
+    click_y = local.y() * dpr
+
+    try:
+        view = omui2.M3dView.active3dView()
+        port_h = view.portHeight()
+    except Exception:
+        return False
+
+    radius2 = (_BADGE_HIT_RADIUS_PX * dpr) ** 2
+    for ctrl in _active_jobs:
+        name = getattr(ctrl, "locator_name", "") or ""
+        if not name or not cmds.objExists(name):
+            continue
+        try:
+            loc = cmds.getAttr(name + ".location")[0]
+            bmn = cmds.getAttr(name + ".bboxMin")[0]
+            bmx = cmds.getAttr(name + ".bboxMax")[0]
+        except Exception:
+            continue
+        _n, _s, badge = locator_state.gizmo_anchors(loc, bmn, bmx)
+        try:
+            out = view.worldToView(om2.MPoint(badge[0], badge[1], badge[2]))
+        except Exception:
+            continue
+        # API 2.0 returns (x, y, wasClipped); some builds nest as ([x, y], bool).
+        if out and isinstance(out[0], (list, tuple)):
+            vx, vy = out[0][0], out[0][1]
+        else:
+            vx, vy = out[0], out[1]
+        # worldToView origin is bottom-left; convert to Qt top-left device px.
+        sx = float(vx)
+        sy = float(port_h) - float(vy)
+        if (sx - click_x) ** 2 + (sy - click_y) ** 2 <= radius2:
+            log.info("[BK download] cancel badge clicked for %s", name)
+            ctrl.cancel()
+            return True
+    return False
+
+
+if QObject is not object:
+
+    class _CancelClickFilter(QObject):  # type: ignore[misc,valid-type]
+        """App-wide filter: left-click on a gizmo's [X] badge cancels it."""
+
+        def eventFilter(self, obj, event):
+            try:
+                if (
+                    event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton
+                    and _try_cancel_at_cursor()
+                ):  # type: ignore[union-attr]
+                    return True
+            except Exception:
+                pass
+            return False
+
+
+def _install_cancel_filter() -> None:
+    global _cancel_filter
+    if QObject is object or QApplication is None:
+        return
+    try:
+        if _cancel_filter is None:
+            _cancel_filter = _CancelClickFilter()
+        app = QApplication.instance()
+        if app is not None:
+            # Remove-then-add keeps a single registration if called twice.
+            app.removeEventFilter(_cancel_filter)
+            app.installEventFilter(_cancel_filter)
+    except Exception as exc:
+        log.debug("Could not install cancel filter: %s", exc)
+
+
+def _uninstall_cancel_filter_if_idle() -> None:
+    """Drop the event filter once no download still shows a cancel badge."""
+    global _cancel_filter
+    if any(getattr(c, "locator_name", "") for c in _active_jobs):
+        return
+    if _cancel_filter is not None and QApplication is not None:
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(_cancel_filter)
+        except Exception:
+            pass
 
 
 def _euler_from_normal_and_yaw(
@@ -167,6 +317,67 @@ def _resolution_key(max_res: str) -> str:
     return _RES_TOKEN.get(str(max_res), "")
 
 
+# Maya linear-unit → metres, for USD stage unit compensation.
+_MAYA_UNIT_METERS = {
+    "mm": 0.001,
+    "cm": 0.01,
+    "m": 1.0,
+    "in": 0.0254,
+    "ft": 0.3048,
+    "yd": 0.9144,
+    "km": 1000.0,
+    "mi": 1609.344,
+}
+
+
+def _maya_meters_per_unit() -> float:
+    """Return how many metres one Maya internal linear unit represents."""
+    unit = "cm"
+    if cmds is not None:
+        try:
+            unit = cmds.currentUnit(query=True, linear=True) or "cm"
+        except Exception:
+            unit = "cm"
+    return _MAYA_UNIT_METERS.get(unit, 0.01)
+
+
+def _read_usd_axis_and_units(usd_path: str) -> tuple[str, float]:
+    """Return ``(up_axis, meters_per_unit)`` for the USD at *usd_path*.
+
+    Prefers the ``pxr`` USD library (shipped with mayaUsdPlugin); falls back
+    to a light text scan of the layer header, then to Blender's export
+    defaults (Z-up, metres) which is what our pipeline produces.
+    """
+    try:
+        from pxr import Usd, UsdGeom  # type: ignore[import-not-found]
+
+        stage = Usd.Stage.Open(usd_path)
+        if stage is not None:
+            up = UsdGeom.GetStageUpAxis(stage) or "Z"
+            mpu = UsdGeom.GetStageMetersPerUnit(stage) or 1.0
+            return str(up), float(mpu)
+    except Exception as exc:
+        log.debug("pxr USD metadata read failed (%s); trying text scan", exc)
+
+    # Fallback: scan the (possibly ASCII) layer header for the metadata.
+    try:
+        with open(usd_path, "rb") as fh:
+            head = fh.read(4096).decode("latin-1", "replace")
+        up = "Z"
+        mpu = 1.0
+        m_up = re.search(r"upAxis\s*=\s*\"?([XYZ])\"?", head)
+        if m_up:
+            up = m_up.group(1)
+        m_mpu = re.search(r"metersPerUnit\s*=\s*([0-9.eE+-]+)", head)
+        if m_mpu:
+            mpu = float(m_mpu.group(1))
+        return up, mpu
+    except Exception as exc:
+        log.debug("USD header text scan failed (%s); assuming Z-up/metres", exc)
+
+    return "Z", 1.0
+
+
 def _client_app_id() -> int:
     try:
         from . import client_lib
@@ -219,6 +430,14 @@ class _DownloadController:
         self.args_path = ""
         self.blend_path = ""
         self.out_usd = ""
+        # Set True once the user aborts via the gizmo [X]; suppresses late
+        # progress/finished callbacks so a killed job can't still import.
+        self._cancelled = False
+        # HDRI download progress (indeterminate — the client download is a
+        # blocking call, so we animate a spinner + show the on-disk size).
+        self._hdri_timer = None
+        self._hdri_tick = 0
+        self._hdri_dest = ""
 
     # ------------------------------------------------------------------
     def start(self) -> bool:
@@ -327,18 +546,58 @@ class _DownloadController:
         # Seed label: asset name + initial step.
         asset_name = str(self.asset.get("name") or self.asset.get("displayName") or "asset")
         self._set_locator_label(name=asset_name, status="Starting…")
+        # Expose a cancel handle so the gizmo shows a [X] badge and the
+        # viewport click filter can abort this download.
+        if self.locator_name:
+            try:
+                from . import locator_state
+
+                locator_state.set_cancel_callback(self.locator_name, self.cancel)
+                _install_cancel_filter()
+            except Exception as exc:
+                log.debug("Could not register cancel handle: %s", exc)
         return self.job.start(script_path, [self.args_path], blender_exe=exe)
+
+    # ------------------------------------------------------------------
+    def cancel(self) -> None:
+        """Abort this download: kill Blender, remove the gizmo, notify.
+
+        Wired to the floating [X] badge on the placement gizmo (via the
+        viewport click filter) and safe to call more than once.
+        """
+        if getattr(self, "_cancelled", False):
+            return
+        self._cancelled = True
+        log.info("[BK download] cancelled by user: %s", self.asset.get("name", "?"))
+        try:
+            self.job.cancel()
+        except Exception as exc:
+            log.debug("job.cancel() failed: %s", exc)
+        self._set_locator_state("idle")
+        self._delete_locator()
+        self._cleanup()
+        _uninstall_cancel_filter_if_idle()
+        if cmds is not None:
+            try:
+                cmds.inViewMessage(amg="Download cancelled", pos="topCenter", fade=True, fadeStayTime=1200)
+            except Exception:
+                pass
+        _refresh_active_view()
 
     # ------------------------------------------------------------------
     # Signal handlers
     # ------------------------------------------------------------------
     def _on_progress(self, frac: float, msg: str) -> None:
+        if getattr(self, "_cancelled", False):
+            return
         log.debug("[BK download] %.0f%% %s", frac * 100, msg)
         self._set_locator_progress(frac)
         step = (msg or "Downloading").strip()
         self._set_locator_label(status=f"{step}: {int(round(frac * 100))}%")  # noqa: RUF046
 
     def _on_status(self, s: str) -> None:
+        if getattr(self, "_cancelled", False):
+            return
         log.info("[BK download] %s", s)
         if s:
             self._set_locator_label(status=s.strip())
@@ -347,6 +606,8 @@ class _DownloadController:
         log.debug("[BK blender] %s", line)
 
     def _on_failed(self, msg: str) -> None:
+        if getattr(self, "_cancelled", False):
+            return
         log.error("[BK download] FAILED: %s", msg)
         self._set_locator_state("idle")
         self._delete_locator()
@@ -375,6 +636,8 @@ class _DownloadController:
         self._notify_ui(message, settings_tab="Files")
 
     def _on_finished(self, out_path: str) -> None:
+        if getattr(self, "_cancelled", False):
+            return
         log.info("[BK download] usd ready: %s", out_path)
         # Surface the next stage in the gizmo label immediately so the user
         # sees "Importing…" instead of the gizmo appearing stuck on the
@@ -493,6 +756,7 @@ class _DownloadController:
             locator_state.clear_proxor_lines(self.locator_name or "")
             locator_state.clear_proxor_mesh(self.locator_name or "")
             locator_state.clear_label(self.locator_name or "")
+            locator_state.clear_cancel_callback(self.locator_name or "")
         except Exception:
             pass
         # Clear any HUD message we put up for this download.
@@ -512,7 +776,14 @@ class _DownloadController:
             log.debug("delete locator failed: %s", exc)
 
     def _import_usd(self, usd_path: str) -> None:
-        """Import the exported USD into the current Maya scene.
+        """Bring the exported USD into the current Maya scene.
+
+        The mechanism depends on ``prefs.import_method``:
+
+        * ``import``    — merge the USD geometry into the scene (default).
+        * ``reference`` — link the USD as a Maya file reference.
+        * ``stage``     — load the USD as a native Maya USD stage
+          (``mayaUsdProxyShape``).
 
         Maya 2027 ships ``mayaUsdPlugin`` which registers the ``USD Import``
         translator and the ``mayaUSDImport`` command.  We prefer the
@@ -526,6 +797,25 @@ class _DownloadController:
 
         self._ensure_usd_plugin()
 
+        method = str(getattr(prefs, "import_method", "import") or "import").lower()
+        if method == "reference":
+            new_roots = self._bring_in_as_reference(usd_path)
+        elif method == "stage":
+            new_roots = self._bring_in_as_stage(usd_path)
+        else:
+            new_roots = self._bring_in_as_import(usd_path)
+
+        if not new_roots:
+            log.warning("usd brought in (%s) but no new top-level node detected.", method)
+            return
+
+        # Group the new roots under a single transform we can position.
+        grp_name = "BK_" + re.sub(r"[^A-Za-z0-9_]", "_", self.asset.get("name", "asset"))
+        grp = cmds.group(new_roots, name=grp_name)
+        self._position_group(grp)
+
+    def _bring_in_as_import(self, usd_path: str) -> list[str]:
+        """Merge the USD geometry into the scene; return the new root nodes."""
         before = set(cmds.ls(assemblies=True) or [])
 
         imported_via_command = False
@@ -569,21 +859,103 @@ class _DownloadController:
                 )
 
         after = set(cmds.ls(assemblies=True) or [])
-        new_roots = list(after - before)
-        if not new_roots:
-            log.warning("usd imported but no new top-level node detected.")
-            return
+        return list(after - before)
 
-        # Group imports under a single transform we can position.
-        grp_name = "BK_" + re.sub(r"[^A-Za-z0-9_]", "_", self.asset.get("name", "asset"))
-        grp = cmds.group(new_roots, name=grp_name)
+    def _bring_in_as_reference(self, usd_path: str) -> list[str]:
+        """Link the USD as a Maya file reference; return the new root nodes."""
+        before = set(cmds.ls(assemblies=True) or [])
+        namespace = "BK_" + re.sub(r"[^A-Za-z0-9_]", "_", self.asset.get("name", "asset"))
+        type_candidates = ["USD Import", "usdImport", "USD", None]
+        last_exc: Exception | None = None
+        for t in type_candidates:
+            try:
+                kw: dict[str, Any] = {
+                    "reference": True,
+                    "ignoreVersion": True,
+                    "mergeNamespacesOnClash": False,
+                    "namespace": namespace,
+                    "options": "",
+                }
+                if t is not None:
+                    kw["type"] = t
+                cmds.file(usd_path, **kw)
+                last_exc = None
+                break
+            except RuntimeError as exc:
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            raise RuntimeError(
+                "Could not reference .usd — mayaUsdPlugin is not available. "
+                "Enable it via Windows → Settings/Preferences → "
+                f"Plug-in Manager. Last error: {last_exc}"
+            )
+        after = set(cmds.ls(assemblies=True) or [])
+        return list(after - before)
 
-        # Align the *bottom-centre* of the freshly-imported geometry's bbox
-        # with the drop point. The placement preview (bbox + proxor) is drawn
-        # with the same convention, so the final mesh lands exactly where
-        # the user saw the cyan/green volume during the drag.
-        # We do this BEFORE translating/rotating so the bbox is read in the
-        # asset's native frame.
+    def _bring_in_as_stage(self, usd_path: str) -> list[str]:
+        """Load the USD as a native Maya USD stage; return the new root nodes.
+
+        Creates a ``mayaUsdProxyShape`` whose ``filePath`` points at the
+        exported USD, so the asset stays a live USD stage that can be
+        edited/streamed without importing geometry into the Maya scene.
+
+        Unlike ``mayaUSDImport`` (which bakes the USD's up-axis + units into
+        the imported geometry), the proxy shape renders the stage *as-authored*.
+        Our USDs come from Blender as Z-up / metres, while Maya works Y-up in
+        its internal linear unit (cm by default), so without compensation the
+        stage shows up rotated +90° on X and ~100× too small. We read the
+        stage's ``upAxis`` / ``metersPerUnit`` and apply the matching rotation
+        + scale to the proxy's transform, reproducing what the import path does.
+        """
+        before = set(cmds.ls(assemblies=True) or [])
+        base = "BK_" + re.sub(r"[^A-Za-z0-9_]", "_", self.asset.get("name", "asset"))
+        try:
+            shape = cmds.createNode("mayaUsdProxyShape", name=base + "_stageShape", skipSelect=True)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not create a Maya USD stage — mayaUsdPlugin is not "
+                "available. Enable it via Windows → Settings/Preferences → "
+                f"Plug-in Manager. Error: {exc}"
+            ) from exc
+        try:
+            cmds.setAttr(shape + ".filePath", usd_path, type="string")
+        except Exception as exc:
+            log.debug("setAttr filePath on proxy shape failed: %s", exc)
+        # Ask the stage to load right away so the bounding box is available
+        # for positioning below.
+        try:
+            cmds.getAttr(shape + ".outStageData")
+        except Exception:
+            pass
+
+        # ── Compensate for USD up-axis + units on the proxy's transform ──
+        up_axis, meters_per_unit = _read_usd_axis_and_units(usd_path)
+        xform_parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        proxy_xform = xform_parents[0] if xform_parents else shape
+        try:
+            maya_mpu = _maya_meters_per_unit()
+            scale = float(meters_per_unit) / maya_mpu if maya_mpu else 1.0
+            if abs(scale - 1.0) > 1e-9:
+                cmds.setAttr(proxy_xform + ".scale", scale, scale, scale, type="double3")
+            # USD Z-up → Maya Y-up is a −90° rotation about X (matches the
+            # import translator).
+            if str(up_axis).upper() == "Z":
+                cmds.setAttr(proxy_xform + ".rotateX", -90.0)
+        except Exception as exc:
+            log.debug("stage axis/unit compensation failed: %s", exc)
+
+        after = set(cmds.ls(assemblies=True) or [])
+        return list(after - before)
+
+    def _position_group(self, grp: str) -> None:
+        """Align a freshly brought-in group's bbox bottom-centre to the drop
+        point, then orient it to the surface normal + yaw."""
+        # Align the *bottom-centre* of the geometry's bbox with the drop
+        # point. The placement preview (bbox + proxor) is drawn with the same
+        # convention, so the final asset lands exactly where the user saw the
+        # cyan/green volume during the drag. Read the bbox in the asset's
+        # native frame BEFORE translating/rotating.
         try:
             bb = cmds.exactWorldBoundingBox(grp)  # [xmin, ymin, zmin, xmax, ymax, zmax]
             cx = (bb[0] + bb[3]) * 0.5
@@ -717,6 +1089,7 @@ class _DownloadController:
             return False
 
         self._set_locator_label(name=asset_name, status="Downloading HDRI…")
+        self._start_hdri_progress(asset_name)
         worker = threading.Thread(
             target=self._hdri_worker,
             args=(base_url, asset_name),
@@ -725,6 +1098,76 @@ class _DownloadController:
         )
         worker.start()
         return True
+
+    # ── HDRI progress spinner (indeterminate) ─────────────────────────────
+    _HDRI_SPINNER = ("|", "/", "-", "\\")
+
+    def _start_hdri_progress(self, asset_name: str) -> None:
+        """Animate a HUD spinner + on-disk size while the HDRI downloads.
+
+        The client's file download is a single blocking call with no
+        byte-level callback, so an exact percentage isn't available; instead
+        we spin an indeterminate indicator and surface how much has landed on
+        disk so the user sees the download is alive and progressing.
+        """
+        self._hdri_name = asset_name
+        self._hdri_tick = 0
+        self._show_hdri_overlay(f"Downloading HDRI: {asset_name}")
+        if QTimer is None:
+            return
+        try:
+            self._hdri_timer = QTimer()
+            self._hdri_timer.setInterval(200)
+            self._hdri_timer.timeout.connect(self._on_hdri_tick)
+            self._hdri_timer.start()
+        except Exception as exc:
+            log.debug("HDRI spinner timer failed to start: %s", exc)
+            self._hdri_timer = None
+
+    def _stop_hdri_progress(self) -> None:
+        if self._hdri_timer is not None:
+            try:
+                self._hdri_timer.stop()
+                self._hdri_timer.timeout.disconnect(self._on_hdri_tick)
+            except Exception:
+                pass
+            self._hdri_timer = None
+        self._hide_hdri_overlay()
+
+    def _on_hdri_tick(self) -> None:
+        self._hdri_tick += 1
+        spin = self._HDRI_SPINNER[self._hdri_tick % len(self._HDRI_SPINNER)]
+        size_txt = ""
+        dest = self._hdri_dest
+        try:
+            if dest and os.path.isfile(dest):
+                mb = os.path.getsize(dest) / (1024.0 * 1024.0)
+                if mb >= 0.05:
+                    size_txt = f"  —  {mb:.1f} MB"
+        except OSError:
+            pass
+        name = getattr(self, "_hdri_name", "") or "HDRI"
+        text = f"Downloading HDRI: {name}  {spin}{size_txt}"
+        self._set_locator_label(status=f"Downloading HDRI {spin}{size_txt}")
+        self._show_hdri_overlay(text)
+
+    @staticmethod
+    def _show_hdri_overlay(text: str, frac: float | None = None) -> None:
+        try:
+            from ..ui import placement
+
+            placement.show_progress(text, frac)
+        except Exception as exc:
+            log.debug("show_progress overlay failed: %s", exc)
+
+    @staticmethod
+    def _hide_hdri_overlay() -> None:
+        try:
+            from ..ui import placement
+
+            placement.hide_progress()
+        except Exception:
+            pass
 
     def _hdri_worker(self, base_url: str, asset_name: str) -> None:
         """Resolve + download the HDRI on a daemon thread (loopback HTTP)."""
@@ -752,6 +1195,8 @@ class _DownloadController:
             slug = _slugify(asset_name)
             fname = f"{slug}_{res_key}{ext}" if res_key else f"{slug}{ext}"
             dest = os.path.join(self.work_dir, fname)
+            # Publish the target so the progress spinner can poll its size.
+            self._hdri_dest = dest
             if not (os.path.isfile(dest) and os.path.getsize(dest) > 0):
                 download_file_via_client(base_url, signed, dest, app_id=_client_app_id())
         except Exception as exc:
@@ -763,17 +1208,28 @@ class _DownloadController:
 
     def _hdri_downloaded(self, hdr_path: str) -> None:
         """Main-thread callback: build the dome light from the image."""
+        # Stop the download spinner but keep the overlay for the build step.
+        if self._hdri_timer is not None:
+            try:
+                self._hdri_timer.stop()
+                self._hdri_timer.timeout.disconnect(self._on_hdri_tick)
+            except Exception:
+                pass
+            self._hdri_timer = None
         try:
+            self._show_hdri_overlay("Creating environment light…")
             self._set_locator_label(status="Creating environment light…")
             self._create_dome_light(hdr_path)
         except Exception as exc:
             log.exception("[BK hdri] dome light creation failed: %s", exc)
             self._notify_ui(f"HDRI setup failed: {exc}")
         finally:
+            self._hide_hdri_overlay()
             self._clear_hud()
             self._cleanup()
 
     def _hdri_failed(self, msg: str) -> None:
+        self._stop_hdri_progress()
         log.error("[BK hdri] %s", msg)
         self._notify_ui(f"HDRI download failed: {msg}")
         self._clear_hud()
@@ -921,6 +1377,8 @@ class _DownloadController:
     def _cleanup(self) -> None:
         if self in _active_jobs:
             _active_jobs.remove(self)
+        # Drop the viewport cancel filter once no download needs it.
+        _uninstall_cancel_filter_if_idle()
         # Leave temp files for now — useful when debugging.  TODO: reap.
 
 
