@@ -1856,6 +1856,8 @@ class _BrandHeader(QWidget):
     Maya chrome renders the tab.
     """
 
+    settings_clicked = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BKBrandHeader")
@@ -1871,6 +1873,16 @@ class _BrandHeader(QWidget):
             "  font-size: 13px;"
             "  font-weight: 600;"
             "  letter-spacing: 0.3px;"
+            "}"
+            "QPushButton#BKSettingsBtn {"
+            "  color: white;"
+            "  font-size: 16px;"
+            "  border: none;"
+            "  background: transparent;"
+            "  padding: 0px;"
+            "}"
+            "QPushButton#BKSettingsBtn:hover {"
+            "  color: #d6e4ff;"
             "}"
         )
 
@@ -1892,6 +1904,14 @@ class _BrandHeader(QWidget):
         row.addWidget(text)
         row.addStretch()
 
+        self._settings_btn = QPushButton("\u2699", self)
+        self._settings_btn.setObjectName("BKSettingsBtn")
+        self._settings_btn.setToolTip("Open Blendkit settings")
+        self._settings_btn.setCursor(Qt.PointingHandCursor)
+        self._settings_btn.setFixedSize(24, 24)
+        self._settings_btn.clicked.connect(self.settings_clicked)
+        row.addWidget(self._settings_btn)
+
 
 class AssetBarWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -1904,6 +1924,7 @@ class AssetBarWidget(QWidget):
         layout.setSpacing(0)
 
         self._brand = _BrandHeader(self)
+        self._brand.settings_clicked.connect(self._open_settings_general)
         layout.addWidget(self._brand)
 
         self._login_banner = _LoginBanner()
@@ -1999,6 +2020,15 @@ class AssetBarWidget(QWidget):
             from .settings_dialog import open_settings
 
             open_settings(tab=self._settings_tab or "Account")
+        except Exception as exc:
+            log.error("Cannot open settings dialog: %s", exc)
+
+    def _open_settings_general(self) -> None:
+        """Open the settings dialog from the panel header (General tab)."""
+        try:
+            from .settings_dialog import open_settings
+
+            open_settings(tab="General")
         except Exception as exc:
             log.error("Cannot open settings dialog: %s", exc)
 
