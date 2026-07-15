@@ -30,7 +30,6 @@ import maya.cmds as cmds
 from qtpy.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QCursor, QPixmap
 from qtpy.QtWidgets import (
-    QAction,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -41,7 +40,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
-    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -52,6 +50,7 @@ from qtpy.QtWidgets import (
 )
 
 from ..core import auth, client_lib
+from ..core import bookmarks as bk_bookmarks
 from ..core import icons as bk_icons
 from ..core import search as bk_search
 from ..core.prefs import prefs
@@ -198,7 +197,7 @@ def _ensure_poller() -> _ReportPoller:
 class AssetDetailDialog(QDialog):
     """Non-modal detail popup — shows asset metadata and thumbnail."""
 
-    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None, thumb_path: str = "") -> None:
         super().__init__(parent)
         self._asset = asset
         self.setWindowTitle(asset.get("name", "Asset detail"))
@@ -227,15 +226,15 @@ class AssetDetailDialog(QDialog):
 
         asset_id = asset.get("assetBaseId") or asset.get("id", "")
         tempdir = bk_search.get_tempdir(asset.get("assetType") or "model")
-        thumb_url = asset.get("thumbnailSmallUrlWebp") or asset.get("thumbnailSmallUrl") or ""
-        basename = thumb_url.rsplit("/", 1)[-1].split("?", 1)[0]
-        cached = os.path.join(tempdir, basename) if basename else ""
-        if cached and os.path.exists(cached):
-            pix = QPixmap(cached)
-            if not pix.isNull():
-                thumb_lbl.setPixmap(pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-            else:
-                thumb_lbl.setPixmap(bk_icons.notready_pixmap(128))
+        # Prefer the thumbnail the tile already resolved; otherwise probe the
+        # client's cache (basenames may be URL-encoded, e.g. "," → "%2C").
+        pix = QPixmap(thumb_path) if thumb_path and os.path.exists(thumb_path) else QPixmap()
+        if pix.isNull():
+            cached = AssetTile._find_cached_thumb(tempdir, asset)
+            if cached:
+                pix = QPixmap(cached)
+        if not pix.isNull():
+            thumb_lbl.setPixmap(pix.scaled(128, 128, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         else:
             thumb_lbl.setPixmap(bk_icons.notready_pixmap(128))
 
@@ -488,6 +487,23 @@ def _verification_pix(asset: dict[str, Any]) -> QPixmap | None:
     return bk_icons.icon(key, size=_BADGE_SIZE) if key else None
 
 
+class _ClickableBadge(QLabel):
+    """A small icon label that emits :attr:`clicked` on left-press.
+
+    Used for the bookmark badge overlaid on a tile — it consumes the press so
+    it never starts the tile's drag-to-place gesture.
+    """
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 # ---------------------------------------------------------------------------
 # Asset tile  — placeholder first, populated later
 # ---------------------------------------------------------------------------
@@ -508,6 +524,7 @@ class AssetTile(QFrame):
 
         self._asset: dict[str, Any] = {}
         self._asset_id: str = ""
+        self._bookmark_id: str = ""
         self._thumb_path: str = ""
         self._is_placeholder: bool = True
         self._thumb_sz: int = max(32, cell_w - 8)
@@ -550,6 +567,16 @@ class AssetTile(QFrame):
         self._vs_badge.setFixedSize(_BADGE_SIZE, _BADGE_SIZE)
         self._vs_badge.hide()
 
+        # Bottom-left: bookmark toggle. Shown filled when the asset is
+        # bookmarked; an empty outline appears on hover so it can be added.
+        # Clickable — consumes the press so it doesn't start a drag.
+        self._bookmark_badge = _ClickableBadge(self._thumb)
+        self._bookmark_badge.setFixedSize(_BADGE_SIZE, _BADGE_SIZE)
+        self._bookmark_badge.setCursor(Qt.PointingHandCursor)
+        self._bookmark_badge.clicked.connect(self._toggle_bookmark)
+        self._bookmark_badge.hide()
+        self._hovering = False
+
         # Asset name label
         self._name = QLabel("…")
         self._name.setAlignment(Qt.AlignCenter)
@@ -568,6 +595,9 @@ class AssetTile(QFrame):
         self._is_placeholder = False
         self._asset = asset
         self._asset_id = asset.get("assetBaseId", "") or asset.get("id", "")
+        # Ratings/bookmarks are keyed by the asset's specific ``id`` (the
+        # ``/assets/{id}/rating/`` endpoint 404s on an assetBaseId).
+        self._bookmark_id = asset.get("id", "") or asset.get("assetBaseId", "")
 
         name = asset.get("name", "Unnamed")
         self._name.setText(name[:30])
@@ -597,6 +627,10 @@ class AssetTile(QFrame):
             self._vs_badge.setToolTip((asset.get("verificationStatus") or "").replace("_", " ").title())
             self._vs_badge.show()
             self._vs_badge.raise_()
+
+        # ── Bookmark badge (bottom-left) ─────────────────────────────────
+        self._bookmark_badge.move(4, self._thumb_sz - _BADGE_SIZE - 4)
+        self.refresh_bookmark_badge()
 
         # ── Thumbnail handling ─────────────────────────────────────────────
         # The local client downloads all thumbnails into the search tempdir
@@ -632,38 +666,71 @@ class AssetTile(QFrame):
             self._lock_badge.move(thumb_sz - _BADGE_SIZE - 4, thumb_sz - _BADGE_SIZE - 4)
         if self._vs_badge.isVisible():
             self._vs_badge.move(thumb_sz - _BADGE_SIZE - 4, 4)
+        if not self._is_placeholder:
+            self._bookmark_badge.move(4, thumb_sz - _BADGE_SIZE - 4)
+
+    # ── Bookmarks ─────────────────────────────────────────────────────────
+
+    def refresh_bookmark_badge(self) -> None:
+        """Sync the bookmark badge icon/visibility with the current state.
+
+        Shows a filled bookmark when the asset is bookmarked; otherwise an
+        empty outline is shown only while the tile is hovered so the user can
+        add one without cluttering the grid.
+        """
+        if self._is_placeholder or not self._bookmark_id:
+            self._bookmark_badge.hide()
+            return
+        marked = bk_bookmarks.is_bookmarked(self._bookmark_id)
+        if marked:
+            self._bookmark_badge.setPixmap(bk_icons.icon("bookmark_full", size=_BADGE_SIZE))
+            self._bookmark_badge.setToolTip("Bookmarked — click to remove")
+            self._bookmark_badge.show()
+            self._bookmark_badge.raise_()
+        elif self._hovering:
+            self._bookmark_badge.setPixmap(bk_icons.icon("bookmark_empty", size=_BADGE_SIZE))
+            self._bookmark_badge.setToolTip("Click to bookmark")
+            self._bookmark_badge.show()
+            self._bookmark_badge.raise_()
+        else:
+            self._bookmark_badge.hide()
+
+    def _toggle_bookmark(self) -> None:
+        if self._is_placeholder or not self._bookmark_id:
+            return
+        if not auth.is_logged_in():
+            bar = _current_bar
+            if bar is not None:
+                bar.show_error("Please log in to bookmark assets.")
+            return
+        bk_bookmarks.toggle(self._bookmark_id)
+        # Optimistic: reflect immediately (a listener also refreshes all tiles).
+        self.refresh_bookmark_badge()
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        self._hovering = True
+        self.refresh_bookmark_badge()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        # Moving the cursor onto the bookmark badge (a child that accepts
+        # clicks) fires this leave; ignore it while the pointer is still
+        # inside the tile so the badge doesn't flicker.
+        if self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            return super().leaveEvent(event)
+        self._hovering = False
+        self.refresh_bookmark_badge()
+        return super().leaveEvent(event)
 
     # ── Context menu ─────────────────────────────────────────────────────
 
     def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        # Right-click opens the asset detail window directly (author search,
+        # "View on Blendkit.com" and rating all live inside it).
         if not self._asset:
             return
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #2a2a2a; color: #dedede; border: 1px solid #444; }"
-            "QMenu::item:selected { background: #0078d4; }"
-        )
-
-        detail_act = QAction("Asset detail…", menu)
-        detail_act.triggered.connect(self._open_detail)
-        menu.addAction(detail_act)
-
-        author = self._asset.get("author") or {}
-        author_id = author.get("id")
-        bar = _current_bar
-        if author_id and bar is not None:
-            author_name = author.get("fullName", "") or "this author"
-            author_act = QAction(f"Search by {author_name}", menu)
-            author_act.triggered.connect(lambda: bar.search_by_author(int(author_id), author_name))
-            menu.addAction(author_act)
-
-        slug = self._asset.get("slug") or self._asset.get("assetBaseId", "")
-        if slug:
-            web_act = QAction("View on Blendkit.com", menu)
-            web_act.triggered.connect(lambda: webbrowser.open(f"https://www.blendkit.com/asset-gallery-detail/{slug}/"))
-            menu.addAction(web_act)
-
-        menu.exec(event.globalPos())
+        self._open_detail()
+        event.accept()
 
     # ── Mouse drag initiation ─────────────────────────────────────────────
 
@@ -701,7 +768,7 @@ class AssetTile(QFrame):
         super().mouseReleaseEvent(event)
 
     def _open_detail(self) -> None:
-        dlg = AssetDetailDialog(self._asset, parent=self.window())
+        dlg = AssetDetailDialog(self._asset, parent=self.window(), thumb_path=self._thumb_path)
         dlg.setWindowModality(Qt.NonModal)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.show_near_cursor()
@@ -853,6 +920,7 @@ class AssetGrid(QWidget):
         self._loading: bool = False
         self._free_only: bool = False
         self._my_assets_only: bool = False
+        self._bookmarked_only: bool = False
         self._quality_limit: int = 0
         self._license_filter: str = "ANY"
         self._animated_only: bool = False
@@ -966,6 +1034,7 @@ class AssetGrid(QWidget):
             asset_type=self._asset_type,
             free_only=self._free_only,
             my_assets_only=self._my_assets_only,
+            bookmarked_only=self._bookmarked_only,
             quality_limit=self._quality_limit,
             license_filter=self._license_filter,
             animated_only=self._animated_only,
@@ -1012,6 +1081,7 @@ class AssetGrid(QWidget):
         asset_type: str,
         free_only: bool = False,
         my_assets_only: bool = False,
+        bookmarked_only: bool = False,
         quality_limit: int = 0,
         license_filter: str = "ANY",
         animated_only: bool = False,
@@ -1031,6 +1101,7 @@ class AssetGrid(QWidget):
         self._asset_type = asset_type
         self._free_only = free_only
         self._my_assets_only = my_assets_only
+        self._bookmarked_only = bookmarked_only
         self._quality_limit = quality_limit
         self._license_filter = license_filter
         self._animated_only = animated_only
@@ -1083,6 +1154,7 @@ class AssetGrid(QWidget):
             asset_type=asset_type,
             free_only=free_only,
             my_assets_only=my_assets_only,
+            bookmarked_only=bookmarked_only,
             quality_limit=quality_limit,
             license_filter=license_filter,
             animated_only=animated_only,
@@ -1110,6 +1182,15 @@ class AssetGrid(QWidget):
     def set_extra_filters(self, extra: dict[str, Any] | None) -> None:
         """Replace the active per-search filter dict (e.g. ``author_id``)."""
         self._extra_filters = dict(extra) if extra else {}
+
+    def refresh_bookmark_badges(self) -> None:
+        """Refresh every live tile's bookmark badge (e.g. after a sync)."""
+        for tile in self._tiles:
+            try:
+                tile.refresh_bookmark_badge()
+            except RuntimeError:
+                # Tile's underlying C++ object was already deleted — skip.
+                continue
 
     # ── Internals ─────────────────────────────────────────────────────────
 
@@ -1344,6 +1425,12 @@ class _FiltersPanel(QWidget):
         self._my_assets.setChecked(prefs.search_my_assets_only)
         self._my_assets.toggled.connect(self._schedule)
         body_l.addWidget(self._my_assets)
+
+        # Bookmarked only (requires login; filters to the account's bookmarks)
+        self._bookmarked = QCheckBox("Bookmarked only")
+        self._bookmarked.setChecked(prefs.search_bookmarked_only)
+        self._bookmarked.toggled.connect(self._schedule)
+        body_l.addWidget(self._bookmarked)
 
         # Quality limit
         quality_row = QHBoxLayout()
@@ -1584,6 +1671,8 @@ class _FiltersPanel(QWidget):
             tokens.append("Free")
         if self._my_assets.isChecked():
             tokens.append("Mine")
+        if self._bookmarked.isChecked():
+            tokens.append("Bookmarked")
         if self._quality_check.isChecked() and self._quality_limit.value() > 0:
             tokens.append(f"Quality≥{self._quality_limit.value()}")
         lic = self._license.currentText()
@@ -1633,6 +1722,7 @@ class _FiltersPanel(QWidget):
     def _schedule(self) -> None:
         prefs.search_free_only = self._free_only.isChecked()
         prefs.search_my_assets_only = self._my_assets.isChecked()
+        prefs.search_bookmarked_only = self._bookmarked.isChecked()
         prefs.search_quality_limit = self._quality_limit.value() if self._quality_check.isChecked() else 0
         prefs.search_license = self._license_to_api(self._license.currentText())
         prefs.search_animated_only = self._animated_only.isChecked()
@@ -1685,6 +1775,10 @@ class _FiltersPanel(QWidget):
     @property
     def my_assets_only(self) -> bool:
         return self._my_assets.isChecked()
+
+    @property
+    def bookmarked_only(self) -> bool:
+        return self._bookmarked.isChecked()
 
     @property
     def quality_limit(self) -> int:
@@ -1784,9 +1878,15 @@ class _LoginBanner(QWidget):
         self._lbl.setWordWrap(True)
         layout.addWidget(self._lbl, stretch=1)
 
+        # When True the primary button acts as a "Dismiss" (emits
+        # ``dismiss_clicked``) instead of starting a login. Set per-message by
+        # :meth:`show_error` so a non-login error banner doesn't open the
+        # browser when the user just wants to close it.
+        self._primary_is_dismiss = False
+
         self._login_btn = QPushButton("Log in")
         self._login_btn.setFixedWidth(70)
-        self._login_btn.clicked.connect(self.login_clicked)
+        self._login_btn.clicked.connect(self._on_primary_clicked)
         layout.addWidget(self._login_btn)
 
         self._settings_btn = QPushButton("Settings…")
@@ -1810,6 +1910,13 @@ class _LoginBanner(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._apply_info_style()
 
+    def _on_primary_clicked(self) -> None:
+        """Route the primary button to login or dismiss based on context."""
+        if self._primary_is_dismiss:
+            self.dismiss_clicked.emit()
+        else:
+            self.login_clicked.emit()
+
     def _apply_info_style(self) -> None:
         self.setStyleSheet("background: #334066;")
         self._lbl.setStyleSheet("color: #c8d0e0; font-size: 11px;")
@@ -1821,6 +1928,7 @@ class _LoginBanner(QWidget):
     def show_info(self, message: str = "Not logged in — some results may be limited.") -> None:
         self._lbl.setText(message)
         self._apply_info_style()
+        self._primary_is_dismiss = False
         self._login_btn.setVisible(True)
         self._login_btn.setText("Log in")
         self._login_btn.setEnabled(True)
@@ -1828,9 +1936,10 @@ class _LoginBanner(QWidget):
         self._logs_btn.setVisible(False)
         self._dismiss_btn.setVisible(False)
 
-    def show_error(self, message: str, *, retry_label: str = "Retry") -> None:
+    def show_error(self, message: str, *, retry_label: str = "Retry", primary_dismiss: bool = False) -> None:
         self._lbl.setText(message)
         self._apply_error_style()
+        self._primary_is_dismiss = primary_dismiss
         self._login_btn.setVisible(True)
         self._login_btn.setText(retry_label)
         self._login_btn.setEnabled(True)
@@ -1856,6 +1965,8 @@ class _BrandHeader(QWidget):
     Maya chrome renders the tab.
     """
 
+    settings_clicked = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BKBrandHeader")
@@ -1871,6 +1982,16 @@ class _BrandHeader(QWidget):
             "  font-size: 13px;"
             "  font-weight: 600;"
             "  letter-spacing: 0.3px;"
+            "}"
+            "QPushButton#BKSettingsBtn {"
+            "  color: white;"
+            "  font-size: 16px;"
+            "  border: none;"
+            "  background: transparent;"
+            "  padding: 0px;"
+            "}"
+            "QPushButton#BKSettingsBtn:hover {"
+            "  color: #d6e4ff;"
             "}"
         )
 
@@ -1892,6 +2013,14 @@ class _BrandHeader(QWidget):
         row.addWidget(text)
         row.addStretch()
 
+        self._settings_btn = QPushButton("\u2699", self)
+        self._settings_btn.setObjectName("BKSettingsBtn")
+        self._settings_btn.setToolTip("Open Blendkit settings")
+        self._settings_btn.setCursor(Qt.PointingHandCursor)
+        self._settings_btn.setFixedSize(24, 24)
+        self._settings_btn.clicked.connect(self.settings_clicked)
+        row.addWidget(self._settings_btn)
+
 
 class AssetBarWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -1904,6 +2033,7 @@ class AssetBarWidget(QWidget):
         layout.setSpacing(0)
 
         self._brand = _BrandHeader(self)
+        self._brand.settings_clicked.connect(self._open_settings_general)
         layout.addWidget(self._brand)
 
         self._login_banner = _LoginBanner()
@@ -1933,12 +2063,15 @@ class AssetBarWidget(QWidget):
 
         # Refresh a pending "My assets only" search once the profile id loads.
         auth.add_profile_listener(self._on_profile_loaded)
+        # Refresh bookmark badges whenever the account's bookmarks change.
+        bk_bookmarks.add_listener(self._grid.refresh_bookmark_badges)
 
         _ensure_poller()
         self._refresh_login_state()
         # Pre-fetch the profile so "My assets only" works on first toggle.
         if auth.is_logged_in():
             auth.fetch_profile()
+            bk_bookmarks.refresh()
         QTimer.singleShot(500, self._default_search)
 
     def _on_profile_loaded(self) -> None:
@@ -1963,6 +2096,7 @@ class AssetBarWidget(QWidget):
         now logged-in state (e.g. enables personalised/"My assets" results).
         """
         self._refresh_login_state()
+        bk_bookmarks.refresh()
         self._on_filters_changed()
 
     def _do_login(self) -> None:
@@ -2002,6 +2136,15 @@ class AssetBarWidget(QWidget):
         except Exception as exc:
             log.error("Cannot open settings dialog: %s", exc)
 
+    def _open_settings_general(self) -> None:
+        """Open the settings dialog from the panel header (General tab)."""
+        try:
+            from .settings_dialog import open_settings
+
+            open_settings(tab="General")
+        except Exception as exc:
+            log.error("Cannot open settings dialog: %s", exc)
+
     def _show_logs(self) -> None:
         # Open Maya's Script Editor — the simplest "show logs" surface
         try:
@@ -2024,7 +2167,7 @@ class AssetBarWidget(QWidget):
         to the relevant tab; defaults to the Account tab.
         """
         self._settings_tab = settings_tab
-        self._login_banner.show_error(message, retry_label="Dismiss")
+        self._login_banner.show_error(message, retry_label="Dismiss", primary_dismiss=True)
         self._login_banner.setVisible(True)
 
     def _on_search(self, query: str, asset_type: str) -> None:
@@ -2036,6 +2179,7 @@ class AssetBarWidget(QWidget):
             asset_type,
             free_only=self._filters.free_only,
             my_assets_only=self._filters.my_assets_only,
+            bookmarked_only=self._filters.bookmarked_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -2058,6 +2202,7 @@ class AssetBarWidget(QWidget):
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
             my_assets_only=self._filters.my_assets_only,
+            bookmarked_only=self._filters.bookmarked_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -2080,6 +2225,7 @@ class AssetBarWidget(QWidget):
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
             my_assets_only=self._filters.my_assets_only,
+            bookmarked_only=self._filters.bookmarked_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,
@@ -2108,6 +2254,7 @@ class AssetBarWidget(QWidget):
             self._search_bar.current_asset_type,
             free_only=self._filters.free_only,
             my_assets_only=self._filters.my_assets_only,
+            bookmarked_only=self._filters.bookmarked_only,
             quality_limit=self._filters.quality_limit,
             license_filter=self._filters.license_filter,
             animated_only=self._filters.animated_only,

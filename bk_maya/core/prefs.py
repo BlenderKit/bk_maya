@@ -75,6 +75,11 @@ class _Prefs:
     blender_exe: str = ""
     """Path to blender executable.  Empty = auto-detect (Blender 5.0+ required)."""
 
+    blender_version_cache: dict[str, str] = dataclasses.field(default_factory=dict)
+    """Cache of detected Blender versions, mapping ``"<exe>|<mtime>|<size>"`` to
+    a ``"X.Y.Z"`` string.  Lets us skip re-running ``blender --version`` on every
+    drag once a path has been validated (see :func:`blender_runner.query_blender_version`)."""
+
     import_method: str = "stage"
     """How models are brought into the scene on drop.  One of:
     ``import``    — merge the USD geometry into the current scene;
@@ -96,6 +101,9 @@ class _Prefs:
 
     search_my_assets_only: bool = False
     """Return only assets uploaded by the logged-in user."""
+
+    search_bookmarked_only: bool = False
+    """Return only assets the logged-in user has bookmarked."""
 
     search_quality_limit: int = 0
     """Minimum quality rating (0 = no limit, 1-5 scale)."""

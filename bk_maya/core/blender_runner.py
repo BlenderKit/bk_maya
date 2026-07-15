@@ -33,7 +33,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from qtpy.QtCore import QObject, QProcess, Signal
+from qtpy.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from .prefs import prefs
 
@@ -131,13 +131,55 @@ def find_blender_executable() -> str:
     return ""
 
 
+# Environment variables that a host DCC (e.g. Maya) injects to point Python at
+# its *own* bundled interpreter. Blender ships and uses its own Python, and it
+# aborts on startup ("Failed to import encodings module" / access violations) if
+# it inherits these — so we strip them from every Blender subprocess we spawn.
+_PYTHON_ENV_VARS_TO_STRIP = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONEXECUTABLE",
+    "PYTHONNOUSERSITE",
+    "PYTHONUSERBASE",
+    "PYTHONDONTWRITEBYTECODE",
+)
+
+
+def blender_subprocess_env() -> dict[str, str]:
+    """Return a copy of the current environment safe for launching Blender.
+
+    Maya (and other DCC hosts) set ``PYTHONHOME``/``PYTHONPATH`` to their own
+    interpreter. Blender uses its bundled Python and crashes if it inherits
+    those, so we remove them here.
+    """
+    env = dict(os.environ)
+    for var in _PYTHON_ENV_VARS_TO_STRIP:
+        env.pop(var, None)
+    return env
+
+
 def query_blender_version(exe_path: str, *, timeout: float = 5.0) -> tuple[int, int, int] | None:
     """Run ``<blender> --version`` and parse the version triple.
+
+    The result is cached in :data:`prefs.blender_version_cache`, keyed by the
+    executable path plus its modification time and size.  Once a path has been
+    validated (e.g. in Settings) the version is reused without spawning a new
+    subprocess, so repeated drags don't re-run ``blender --version`` every time.
+    Only successful detections are cached, so a failing path is still retried.
 
     Returns ``None`` on failure.
     """
     if not exe_path or not os.path.isfile(exe_path):
         return None
+
+    sig = _version_cache_sig(exe_path)
+    if sig:
+        cached = prefs.blender_version_cache.get(sig)
+        parsed = _parse_version_str(cached)
+        if parsed is not None:
+            return parsed
+
     try:
         proc = subprocess.run(
             [exe_path, "--version"],
@@ -145,15 +187,58 @@ def query_blender_version(exe_path: str, *, timeout: float = 5.0) -> tuple[int, 
             text=True,
             timeout=timeout,
             check=False,
+            env=blender_subprocess_env(),
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         first_line = (proc.stdout or "").splitlines()[0] if proc.stdout else ""
         m = _VERSION_RE.search(first_line)
         if not m:
             return None
-        return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+        version = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
+
+    if sig:
+        _store_version_cache(sig, version)
+    return version
+
+
+def _version_cache_sig(exe_path: str) -> str:
+    """Return a cache key of ``"<path>|<mtime>|<size>"``, or "" if unavailable."""
+    try:
+        st = os.stat(exe_path)
+    except OSError:
+        return ""
+    return f"{exe_path}|{int(st.st_mtime)}|{st.st_size}"
+
+
+def _parse_version_str(value: str | None) -> tuple[int, int, int] | None:
+    """Parse a cached ``"X.Y.Z"`` string back into a version triple."""
+    if not value:
+        return None
+    parts = value.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+def _store_version_cache(sig: str, version: tuple[int, int, int]) -> None:
+    """Persist a detected version, keeping only the most recent few entries."""
+    value = ".".join(str(x) for x in version)
+    if prefs.blender_version_cache.get(sig) == value:
+        return
+    prefs.blender_version_cache[sig] = value
+    # Bound the cache so stale entries (old paths/builds) don't accumulate.
+    if len(prefs.blender_version_cache) > 8:
+        for key in list(prefs.blender_version_cache)[:-8]:
+            prefs.blender_version_cache.pop(key, None)
+    try:
+        prefs.save()
+    except Exception:
+        log.debug("Could not persist Blender version cache", exc_info=True)
 
 
 def version_meets_min(version: tuple[int, int, int] | None) -> bool:
@@ -218,6 +303,13 @@ class BlenderJob(QObject):
         self._proc.readyReadStandardOutput.connect(self._read_stdout)
         self._proc.errorOccurred.connect(self._on_error)
         self._proc.finished.connect(self._on_finished)
+
+        # Launch Blender with a sanitized environment so its bundled Python is
+        # used instead of the host DCC's (Maya sets PYTHONHOME/PYTHONPATH).
+        proc_env = QProcessEnvironment()
+        for key, value in blender_subprocess_env().items():
+            proc_env.insert(key, value)
+        self._proc.setProcessEnvironment(proc_env)
 
         log.info("Launching Blender: %s %s", exe, " ".join(argv))
         self._proc.start(exe, argv)
