@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 # ── Versions / constants ─────────────────────────────────────────────────────
 
-DEFAULT_CLIENT_VERSION = "v1.10.0"
+DEFAULT_CLIENT_VERSION = "v1.11.0"
 """Last-resort client version used only when none can be discovered on disk.
 
 The real version is detected at runtime from the newest ``vX.Y.Z`` folder that
@@ -176,7 +176,7 @@ def _parse_version(name: str) -> tuple[int, ...] | None:
 
 
 def _detect_client_version() -> str:
-    """Return the newest bundled client version, e.g. ``v1.10.0``.
+    """Return the newest bundled client version, e.g. ``v1.11.0``.
 
     Scans ``_client_binaries_root`` for ``vX.Y.Z`` folders that actually
     contain a binary for the current platform and returns the highest one, so a
@@ -216,12 +216,12 @@ def _detect_client_version() -> str:
 
 
 def _client_version() -> str:
-    """Bundled client version string, e.g. ``v1.10.0``."""
+    """Bundled client version string, e.g. ``v1.11.0``."""
     return _detect_client_version()
 
 
 def _api_version() -> str:
-    """Client HTTP API version prefix, e.g. ``v1.10`` (major.minor)."""
+    """Client HTTP API version prefix, e.g. ``v1.11`` (major.minor)."""
     return ".".join(_detect_client_version().split(".")[:2])
 
 
