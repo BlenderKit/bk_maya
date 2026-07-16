@@ -124,7 +124,7 @@ def vendor_packages(lib_dir: str, packages: list[str] = VENDOR_PACKAGES) -> None
 
 
 def read_client_version() -> str:
-    """Read the client version (e.g. ``1.10.0``) from the submodule VERSION file."""
+    """Read the client version (e.g. ``1.11.0``) from the submodule VERSION file."""
     version_file = os.path.join(CLIENT_SRC_DIR, "VERSION")
     if not os.path.isfile(version_file):
         print(
@@ -719,7 +719,7 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "bk_client GitHub release tag to download for 'release' (e.g. 'v1.10.0'). "
+        "bk_client GitHub release tag to download for 'release' (e.g. 'v1.11.0'). "
         "Defaults to the latest published release."
     ),
 )
