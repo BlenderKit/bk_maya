@@ -299,6 +299,13 @@ def _install_low_level_hook() -> None:
             ]
             user32.GetMessageW.restype = ctypes.c_int
 
+            # NB: without an explicit restype ctypes assumes ``c_int`` (32-bit)
+            # and truncates the 64-bit HMODULE returned here, yielding an
+            # invalid handle → SetWindowsHookExW fails with ERROR_MOD_NOT_FOUND
+            # (126) on machines where user32 loads at a high address.
+            kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+            kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+
             hmod = kernel32.GetModuleHandleW(None)
             _hook_handle = user32.SetWindowsHookExW(_WH_MOUSE_LL, _hook_proc_ref, hmod, 0)
             if not _hook_handle:
@@ -449,6 +456,35 @@ def get_drag_snapshot() -> dict[str, Any] | None:
 # ═════════════════════════════════════════════════════════════════════════════
 # Maya viewport helpers
 # ═════════════════════════════════════════════════════════════════════════════
+
+
+def _widget_alive(w: QWidget | None) -> bool:
+    """True if the C++ object behind a QWidget wrapper still exists.
+
+    Maya can destroy the viewport's underlying C++ widget (e.g. when a
+    panel is torn down or rebuilt) while a stale Python wrapper lingers.
+    Touching such a wrapper raises ``RuntimeError: Internal C++ object
+    already deleted``.  Callers use this to drop the stale cache and
+    re-resolve the current viewport instead of crashing.
+    """
+    if w is None:
+        return False
+    for sh_name in ("shiboken6", "shiboken2"):
+        try:
+            sh = __import__(sh_name)
+            return bool(sh.isValid(w))
+        except ImportError:
+            continue
+        except Exception:
+            break
+    # Fallback when shiboken isn't importable: poke a cheap accessor.
+    try:
+        w.objectName()
+        return True
+    except RuntimeError:
+        return False
+    except Exception:
+        return True
 
 
 def _get_viewport_widget() -> QWidget | None:
@@ -1708,11 +1744,12 @@ class DragSession(QObject):  # type: ignore
             rotation_changed = True
 
         # ── 3. Cursor position → raycast ──────────────────────────────────
-        vp = self._vp_widget or _get_viewport_widget()
+        vp = self._vp_widget if _widget_alive(self._vp_widget) else None
+        if vp is None:
+            vp = _get_viewport_widget()
+            self._vp_widget = vp
         if vp is None:
             return
-        if vp is not self._vp_widget:
-            self._vp_widget = vp
 
         try:
             gp = QCursor.pos()
@@ -1824,11 +1861,12 @@ class DragSession(QObject):  # type: ignore
         Only real geometry counts (the Y=0 floor fallback is ignored), so a
         material can only be dropped directly onto a mesh.
         """
-        vp = self._vp_widget or _get_viewport_widget()
+        vp = self._vp_widget if _widget_alive(self._vp_widget) else None
+        if vp is None:
+            vp = _get_viewport_widget()
+            self._vp_widget = vp
         if vp is None:
             return
-        if vp is not self._vp_widget:
-            self._vp_widget = vp
 
         try:
             gp = QCursor.pos()
@@ -1884,11 +1922,12 @@ class DragSession(QObject):  # type: ignore
         HDRIs become a world-level environment light, so there is no mesh
         target and no raycast: the drop is valid anywhere inside the viewport.
         """
-        vp = self._vp_widget or _get_viewport_widget()
+        vp = self._vp_widget if _widget_alive(self._vp_widget) else None
+        if vp is None:
+            vp = _get_viewport_widget()
+            self._vp_widget = vp
         if vp is None:
             return
-        if vp is not self._vp_widget:
-            self._vp_widget = vp
         try:
             gp = QCursor.pos()
         except Exception:
