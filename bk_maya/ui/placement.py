@@ -364,6 +364,23 @@ def _consume_rmb_up() -> bool:
     return False
 
 
+def _reset_hook_state() -> None:
+    """Clear latched hook state so idle-time events don't leak into a drag.
+
+    The WH_MOUSE_LL hook is global and stays installed for the whole Maya
+    process, so it keeps latching button-up / wheel events even when no
+    drag is active.  In Maya, right-click marking menus fire constantly
+    between drags, each leaving ``_rmb_up_pending = True``.  Without this
+    reset the next drag's very first poll tick would consume that stale
+    flag and cancel immediately.  Called at drag start, while the drag's
+    initiating LMB is still held, so no genuine drop event is discarded.
+    """
+    global _wheel_accum, _lmb_up_pending, _rmb_up_pending
+    _wheel_accum = 0
+    _lmb_up_pending = False
+    _rmb_up_pending = False
+
+
 def _meters_to_internal() -> float:
     """Return the scale factor that converts 1 meter to Maya's internal unit.
 
@@ -1566,6 +1583,12 @@ class DragSession(QObject):  # type: ignore
         # DragSession consumes them from ``_poll_cursor`` so rotation/drop are
         # updated on the same tick as the cursor position.
         _install_low_level_hook()
+
+        # Discard any button-up / wheel events the always-on hook latched
+        # while idle (e.g. Maya right-click marking menus between drags),
+        # otherwise the first poll tick would consume a stale RMB-up and
+        # cancel this drag instantly.
+        _reset_hook_state()
 
         # Drive raycasts from a polling timer instead of relying on Qt mouse-
         # move events.  Qt's implicit grab on the asset tile (LMB pressed in
