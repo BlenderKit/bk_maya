@@ -21,7 +21,10 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+# Shipped add-on must run on Maya 2023's Python 3.9 (dev venv is 3.11+, see
+# requires-python). py39 keeps 3.10+ syntax out and makes the FA rules enforce
+# `from __future__ import annotations` wherever modern typing is used.
+target-version = "py39"
 line-length = 120
 include = ["**/*.py"]
 extend-exclude = [

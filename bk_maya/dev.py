@@ -17,6 +17,8 @@
 # ##### END GPL LICENSE BLOCK #####
 # type: ignore
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -189,7 +191,7 @@ def _unpack_client_bundle(zip_path: str, client_dir: str) -> str:
     return version
 
 
-def blendkit_client_build(abs_build_dir: str) -> None:
+def blendkit_client_build(abs_build_dir: str) -> str:
     """Build the client locally and unpack its release bundle into the add-on.
 
     Delegates the cross-platform compile to the ``bk_client`` submodule's own
@@ -197,7 +199,7 @@ def blendkit_client_build(abs_build_dir: str) -> None:
     then unpacks that bundle into ``<addon>/client`` — the very same layout a
     downloaded signed release produces (see :func:`download_client_release`).
     Used by the local/debug ``build`` command; the binaries it produces are
-    UNSIGNED.
+    UNSIGNED. Returns the unpacked client version (``vX.Y.Z``).
     """
     client_dir = os.path.join(abs_build_dir, "client")
     client_version = read_client_version()
@@ -216,6 +218,7 @@ def blendkit_client_build(abs_build_dir: str) -> None:
     version = _unpack_client_bundle(zip_path, client_dir)
     os.remove(zip_path)
     print(f"Blendkit-Client {version} built and unpacked into {client_dir}")
+    return version
 
 
 def _github_headers() -> dict:
@@ -230,21 +233,84 @@ def _github_headers() -> dict:
     return headers
 
 
+def read_client_version_pin() -> str:
+    """Read the pinned Client version from ``bk_maya/core/global_vars.py``.
+
+    The pin is the MINOR series (e.g. ``v1.11``); a full ``vX.Y.Z`` is also
+    accepted. Parsed with a regex so this script has no import-time dependency
+    on the package (which pulls in Qt / Maya modules).
+    """
+    global_vars_py = os.path.join("bk_maya", "core", "global_vars.py")
+    with open(global_vars_py, encoding="utf-8") as f:
+        match = re.search(r'^CLIENT_VERSION\s*[:=].*?"([^"]+)"', f.read(), re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"Could not find CLIENT_VERSION in {global_vars_py}")
+    return match.group(1)
+
+
+def resolve_client_release_tag(pin: str) -> str:
+    """Resolve a version pin to an exact published bk_client release tag.
+
+    - ``vX.Y``   -> the newest published ``vX.Y.Z`` release (bk_client auto-bumps
+      the patch on each merge, so this tracks the latest patch of the series).
+    - ``vX.Y.Z`` -> that exact tag.
+    """
+    parts = pin.lstrip("v").split(".")
+    if len(parts) >= 3:
+        return f"v{'.'.join(parts[:3])}"
+
+    major, minor = parts[0], parts[1]
+    pattern = re.compile(rf"^v{re.escape(major)}\.{re.escape(minor)}\.(\d+)$")
+    api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases?per_page=100"
+    request = urllib.request.Request(api_url, headers=_github_headers())
+    with urllib.request.urlopen(request) as response:
+        releases = json.load(response)
+
+    matches = []
+    for rel in releases:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        m = pattern.match(rel.get("tag_name", ""))
+        if m:
+            matches.append((int(m.group(1)), rel["tag_name"]))
+    if not matches:
+        raise RuntimeError(f"No published {CLIENT_RELEASE_REPO} release found for series v{major}.{minor}.*")
+    matches.sort()
+    return matches[-1][1]
+
+
+def write_resolved_client_version(client_dir: str, version: str) -> None:
+    """Bake the exact resolved Client version into the bundle for the runtime.
+
+    ``core/client_lib.py:_detect_client_version`` reads ``client/RESOLVED_VERSION``
+    to locate the ``client/vX.Y.Z/<binary>`` folder on user machines, instead of
+    scanning for the newest folder.
+    """
+    os.makedirs(client_dir, exist_ok=True)
+    tag = version if version.startswith("v") else f"v{version}"
+    with open(os.path.join(client_dir, "RESOLVED_VERSION"), "w", encoding="utf-8") as f:
+        f.write(f"{tag}\n")
+    print(f"Wrote client/RESOLVED_VERSION = {tag}")
+
+
 def download_client_release(client_dir: str, tag: str | None = None) -> str:
     """Download the signed ``bk_client.zip`` from the bk_client GitHub releases.
 
-    Fetches the ``bk_client.zip`` asset of the latest release (or the release
-    tagged *tag*) and unpacks it into *client_dir*. This is how ``release``
-    ships correctly code-signed/notarized binaries — signing happens in the
-    bk_client repo's CI, so we never sign locally. See
+    When *tag* is omitted, the pinned minor series (``CLIENT_VERSION`` in
+    ``bk_maya/core/global_vars.py``) is resolved to the newest published
+    ``vX.Y.Z`` release. Fetches the ``bk_client.zip`` asset of that release and
+    unpacks it into *client_dir*. This is how ``release`` ships correctly
+    code-signed/notarized binaries — signing happens in the bk_client repo's CI,
+    so we never sign locally. See
     https://github.com/BlenderKit/bk_client/releases.
 
     Returns the unpacked client version (``vX.Y.Z``).
     """
-    if tag:
-        api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases/tags/{tag}"
-    else:
-        api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases/latest"
+    if not tag:
+        pin = read_client_version_pin()
+        tag = resolve_client_release_tag(pin)
+        print(f"Client pin {pin} resolved to release {tag}")
+    api_url = f"https://api.github.com/repos/{CLIENT_RELEASE_REPO}/releases/tags/{tag}"
 
     print(f"Fetching bk_client release metadata: {api_url}")
     request = urllib.request.Request(api_url, headers=_github_headers())
@@ -557,7 +623,8 @@ def do_build(
     - client_bundle: path to a local signed ``bk_client.zip`` (or a directory
       containing it) used when ``client_source == "local"``.
     - release_tag: optional bk_client release tag for ``client_source ==
-      "download"`` (defaults to the latest release).
+      "download"``. When omitted, the pinned minor series (``CLIENT_VERSION`` in
+      ``bk_maya/core/global_vars.py``) is resolved to its newest patch release.
     - channel: release channel (``stable`` / ``alpha`` / ``dev``) — controls the
       ``-alpha`` suffix and is recorded in the built package.
     - version: explicit full version override; otherwise computed from
@@ -581,11 +648,15 @@ def do_build(
     # bk_client.zip (downloaded from GitHub, or a locally supplied bundle).
     client_dir = os.path.join(addon_build_dir, "client")
     if client_source == "download":
-        download_client_release(client_dir, tag=release_tag)
+        resolved_client_version = download_client_release(client_dir, tag=release_tag)
     elif client_source == "local":
-        install_local_client_bundle(client_bundle, client_dir)
+        resolved_client_version = install_local_client_bundle(client_bundle, client_dir)
     else:
-        blendkit_client_build(addon_build_dir)
+        resolved_client_version = blendkit_client_build(addon_build_dir)
+
+    # Bake the exact resolved vX.Y.Z into the bundle so the runtime locates the
+    # client folder via client/RESOLVED_VERSION instead of scanning for it.
+    write_resolved_client_version(client_dir, resolved_client_version)
 
     # Copy bk_maya/ Python sources (including vendored lib/). The bk_proxor
     # submodule is packaged separately below from its src/ layout, so exclude it
@@ -719,8 +790,9 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "bk_client GitHub release tag to download for 'release' (e.g. 'v1.11.0'). "
-        "Defaults to the latest published release."
+        "bk_client GitHub release tag to download for 'release' (e.g. 'v1.11.3'). "
+        "Defaults to resolving the pinned minor series (CLIENT_VERSION in "
+        "global_vars.py) to its newest published patch release."
     ),
 )
 parser.add_argument(

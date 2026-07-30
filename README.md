@@ -28,7 +28,7 @@ The Blendkit Maya plugin connects Autodesk Maya to the [Blendkit service](https:
 
 It is a port of the official Blender add-on built on:
 
-- Maya 2027 (Python 3.11, PySide6, OpenMaya 2.0)
+- Maya 2023–2027 (Python 3.9–3.11, PySide2/PySide6 via `qtpy`, OpenMaya 2.0)
 - The shared Go `blenderkit-client` for downloads, auth and search
 - A vendored `qtpy` / `requests` / `packaging` (see [bk_maya/lib](bk_maya/lib))
 

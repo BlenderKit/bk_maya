@@ -46,13 +46,15 @@ log = logging.getLogger(__name__)
 
 # ── Versions / constants ─────────────────────────────────────────────────────
 
-DEFAULT_CLIENT_VERSION = "v1.11.0"
+DEFAULT_CLIENT_VERSION = global_vars.CLIENT_VERSION
 """Last-resort client version used only when none can be discovered on disk.
 
-The real version is detected at runtime from the newest ``vX.Y.Z`` folder that
-ships a binary for the current platform (see ``_detect_client_version``). The
-client now lives in the ``bk_client`` submodule, so we no longer pin a single
-hardcoded version here — a newer bundled client is picked up automatically."""
+Normally the exact ``vX.Y.Z`` is read from ``client/RESOLVED_VERSION`` (baked in
+at build time from the newest patch of the pinned minor series — bk_client
+auto-bumps the patch on each merge). In a plain source checkout that file is
+absent, so we scan for the newest ``vX.Y.Z`` folder that ships a binary for the
+current platform (see ``_detect_client_version``) and only fall back to the
+minor pin (``global_vars.CLIENT_VERSION``) when nothing is on disk yet."""
 
 _client_version_cache: str | None = None
 
@@ -176,19 +178,37 @@ def _parse_version(name: str) -> tuple[int, ...] | None:
 
 
 def _detect_client_version() -> str:
-    """Return the newest bundled client version, e.g. ``v1.11.0``.
+    """Return the exact bundled client version, e.g. ``v1.11.3``.
 
-    Scans ``_client_binaries_root`` for ``vX.Y.Z`` folders that actually
-    contain a binary for the current platform and returns the highest one, so a
-    newer bundled client is used automatically. Falls back to the submodule's
-    ``client/VERSION`` file (fresh checkout, before any build) and finally to
-    ``DEFAULT_CLIENT_VERSION``. The result is cached for the process lifetime.
+    Resolution order (first hit wins, cached for the process lifetime):
+
+    1. ``client/RESOLVED_VERSION`` — baked in at build time from the exact
+       ``vX.Y.Z`` GitHub release that was bundled. bk_client auto-bumps the
+       patch on each merge, so the build pins only the minor series
+       (``global_vars.CLIENT_VERSION``) and records the resolved patch here.
+    2. Newest ``vX.Y.Z`` folder that ships a binary for the current platform —
+       covers a source checkout / dev build where no RESOLVED_VERSION exists.
+    3. The submodule's ``client/VERSION`` file (fresh checkout, before a build).
+    4. ``global_vars.CLIENT_VERSION`` (the minor pin) as a last resort.
     """
     global _client_version_cache
     if _client_version_cache is not None:
         return _client_version_cache
 
     binaries_root = _client_binaries_root()
+
+    # 1. RESOLVED_VERSION baked in at build time (authoritative for packaged
+    #    add-ons). Tolerate a value with or without the leading ``v``.
+    try:
+        with open(os.path.join(binaries_root, "RESOLVED_VERSION"), encoding="utf-8") as fh:
+            resolved = fh.read().strip()
+        if resolved:
+            _client_version_cache = resolved if resolved.startswith("v") else f"v{resolved}"
+            return _client_version_cache
+    except OSError:
+        pass
+
+    # 2. Source checkout / dev build: newest vX.Y.Z folder with a platform binary.
     binary = _binary_name()
     best: tuple[tuple[int, ...], str] | None = None
     try:
@@ -206,23 +226,32 @@ def _detect_client_version() -> str:
     if best is not None:
         _client_version_cache = best[1]
     else:
-        # No binary folder yet — read the VERSION file next to the Go sources.
+        # 3. No binary folder yet — read the VERSION file next to the Go sources.
         try:
             with open(os.path.join(binaries_root, "VERSION"), encoding="utf-8") as fh:
                 _client_version_cache = f"v{fh.read().strip()}"
         except OSError:
+            # 4. Nothing on disk — fall back to the minor pin.
             _client_version_cache = DEFAULT_CLIENT_VERSION
     return _client_version_cache
 
 
 def _client_version() -> str:
-    """Bundled client version string, e.g. ``v1.11.0``."""
+    """Exact bundled client version string, e.g. ``v1.11.3``."""
     return _detect_client_version()
 
 
 def _api_version() -> str:
-    """Client HTTP API version prefix, e.g. ``v1.11`` (major.minor)."""
-    return ".".join(_detect_client_version().split(".")[:2])
+    """Client HTTP API version prefix, e.g. ``v1.11`` (major.minor).
+
+    Derived from the minor pin (``global_vars.CLIENT_VERSION``) rather than the
+    resolved patch: non-breaking client changes bump only the patch and keep the
+    same ``/vX.Y`` API path. Stays tolerant of a full ``vX.Y.Z`` pin too.
+    """
+    parts = global_vars.CLIENT_VERSION.split(".")
+    if len(parts) >= 3:
+        return ".".join(parts[:2])
+    return global_vars.CLIENT_VERSION
 
 
 def _inplace_binary_path() -> str:
@@ -332,33 +361,47 @@ def _maybe_dev_build() -> None:
 
 
 def _ensure_client_binary_installed() -> str:
-    """Copy the in-addon binary to the user's global dir on first run.
+    """Resolve the binary to launch, copying to the user's global dir only when needed.
 
-    Returns the path to use for spawning. Falls back to the in-addon copy
-    (``_use_inplace_client = True``) if the copy fails — e.g. when the
-    addon lives on a read-only volume.
+    Order (mirrors ``ensure_running``: run an existing client, then start, then
+    copy as a last resort):
+
+    1. Prefer an **already-installed** copy at ``dst`` and start it as-is — never
+       overwrite it, so a client another Maya session is currently executing
+       from that path is not clobbered.
+    2. Only when no installed copy exists do we copy the in-addon binary to
+       ``dst`` (first run). Dev rebuilds still refresh because
+       ``_maybe_dev_build`` removes the stale ``dst`` before we get here.
+    3. Fall back to the in-addon copy (``_use_inplace_client = True``) if the
+       copy fails — e.g. when the addon lives on a read-only volume.
     """
     global _use_inplace_client
 
     _maybe_dev_build()
 
     src = _inplace_binary_path()
+    dst = _installed_binary_path()
+
+    # 1. An installed copy already exists — start it without touching it.
+    if not _use_inplace_client and os.path.isfile(dst):
+        return dst
+
     if not os.path.isfile(src):
         raise FileNotFoundError(f"Blendkit client binary not found at {src}. Run bk_maya/dev.py to build it.")
 
     if _use_inplace_client:
         return src
 
-    dst = _installed_binary_path()
+    # 2. No installed copy yet — install it (first run), then run from there.
     try:
-        if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(src):
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-            if sys.platform != "win32":
-                os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
-            log.info("Installed Blendkit client to %s", dst)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        if sys.platform != "win32":
+            os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
+        log.info("Installed Blendkit client to %s", dst)
         return dst
     except OSError as exc:
+        # 3. Read-only global dir (Microsoft Store / sandboxed Maya): run in place.
         log.warning(
             "Could not install client to %s (%s); using in-addon copy.",
             dst,

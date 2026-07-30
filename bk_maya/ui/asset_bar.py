@@ -1,4 +1,4 @@
-"""Blendkit asset bar — PySide6 side panel for Maya.
+"""Blendkit asset bar — Qt side panel for Maya (PySide2/PySide6 via qtpy).
 
 Entry point: ``open_asset_bar()``
 
@@ -2356,11 +2356,20 @@ def _reopen_on_close() -> None:
 def _populate_workspace_control() -> None:
     """Called by Maya's uiScript when the workspaceControl is created."""
     global _current_bar
+    # shiboken6 on Maya 2024+ (PySide6); shiboken2 on Maya 2023 (PySide2).
+    shiboken = None
+    for sh_name in ("shiboken6", "shiboken2"):
+        try:
+            shiboken = __import__(sh_name)
+            break
+        except ImportError:
+            continue
     try:
-        import shiboken6  # type: ignore
         from maya.OpenMayaUI import MQtUtil  # type: ignore
     except ImportError:
-        log.error("shiboken6 not available — cannot embed Qt widget.")
+        shiboken = None
+    if shiboken is None:
+        log.error("shiboken (6/2) not available — cannot embed Qt widget.")
         return
 
     ptr = MQtUtil.findControl(CONTROL_NAME)
@@ -2368,7 +2377,7 @@ def _populate_workspace_control() -> None:
         log.error("workspaceControl '%s' not found.", CONTROL_NAME)
         return
 
-    parent_widget: QWidget = shiboken6.wrapInstance(int(ptr), QWidget)
+    parent_widget: QWidget = shiboken.wrapInstance(int(ptr), QWidget)
     parent_layout = parent_widget.layout()
 
     bar = AssetBarWidget(parent_widget)
