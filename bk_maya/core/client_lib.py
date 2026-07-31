@@ -95,6 +95,11 @@ _process: subprocess.Popen | None = None
 _active_port: str = CLIENT_PORTS[0]
 _app_id: int = os.getpid()
 
+# Index into CLIENT_PORTS for the next spawn. Rotated when the client keeps
+# exiting on the current port (e.g. it is occupied by another program) so we
+# abandon a dead port instead of retrying it every startup.
+_port_index: int = 0
+
 # Consecutive /report failures — used by the report poller to trigger an
 # auto-respawn (mirrors Blender's CLIENT_FAILED_REPORTS counter).
 _failed_reports: int = 0
@@ -489,6 +494,19 @@ def _find_running_client() -> str | None:
     return None
 
 
+def _client_process_alive() -> bool:
+    """True if a client subprocess *we* spawned is still running.
+
+    Guards against spawning a duplicate on a transient poll timeout: a live but
+    momentarily busy client would otherwise get a second process that fails to
+    bind the same port (EADDRINUSE) and dies, spinning a respawn loop that both
+    pins the CPU and stalls startup. Mirrors the Blender addon's
+    ``is_client_process_alive``.
+    """
+    proc = _process
+    return proc is not None and proc.poll() is None
+
+
 def _spawn(port: str) -> subprocess.Popen:
     binary = _ensure_client_binary_installed()
 
@@ -536,12 +554,16 @@ def _spawn(port: str) -> subprocess.Popen:
 def ensure_running(timeout: float = 8.0) -> str:
     """Make sure a client process is reachable; return its port.
 
-    Thread-safe.  No-op if a process is already responsive.
+    Thread-safe. Reuses any client already answering, never spawns a duplicate
+    while our own process is still alive, and rotates to the next port when the
+    client keeps dying on the current one (e.g. the port is taken by another
+    program) instead of hammering the same dead port every call.
     """
-    global _process, _active_port, _have_client, _unavailable_reason
+    global _process, _active_port, _have_client, _unavailable_reason, _port_index
 
     with _state_lock:
-        # Already-running existing process (perhaps from a previous Maya session)?
+        # 1. Reuse a client already answering on any known port (one from a
+        #    previous Maya session, or our own once it has finished booting).
         existing = _find_running_client()
         if existing:
             _active_port = existing
@@ -550,8 +572,18 @@ def ensure_running(timeout: float = 8.0) -> str:
             log.debug("Reusing client on port %s", existing)
             return existing
 
-        # Spawn a new one on the preferred port and wait for it.
-        port = CLIENT_PORTS[0]
+        # 2. A client WE spawned is still alive but just slow to answer the ping
+        #    (booting). Do NOT spawn a duplicate: it would fail to bind the same
+        #    port and die, spinning a respawn loop. Reuse its port — the poller
+        #    keeps pinging and it will answer shortly.
+        if _client_process_alive():
+            _have_client = True
+            _unavailable_reason = None
+            log.debug("Client process still alive on port %s; not respawning", _active_port)
+            return _active_port
+
+        # 3. Spawn on the current port in the rotation.
+        port = CLIENT_PORTS[_port_index % len(CLIENT_PORTS)]
         try:
             _process = _spawn(port)
         except FileNotFoundError as exc:
@@ -570,6 +602,20 @@ def ensure_running(timeout: float = 8.0) -> str:
             _have_client = True
             _unavailable_reason = None
             return port
+        # The client exited before it answered — almost always the port is
+        # occupied/blocked. Stop waiting on a dead port (that would burn the
+        # whole timeout on every call) and rotate so the next attempt tries a
+        # different port instead of retrying the same one.
+        if _process is not None and _process.poll() is not None:
+            with _state_lock:
+                _port_index += 1
+            next_port = CLIENT_PORTS[_port_index % len(CLIENT_PORTS)]
+            log.warning(
+                "Client exited on port %s (likely occupied); next attempt will use port %s",
+                port,
+                next_port,
+            )
+            break
         time.sleep(0.15)
 
     raise RuntimeError(f"Blendkit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
