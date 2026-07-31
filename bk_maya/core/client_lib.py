@@ -46,13 +46,15 @@ log = logging.getLogger(__name__)
 
 # ── Versions / constants ─────────────────────────────────────────────────────
 
-DEFAULT_CLIENT_VERSION = "v1.11.0"
+DEFAULT_CLIENT_VERSION = global_vars.CLIENT_VERSION
 """Last-resort client version used only when none can be discovered on disk.
 
-The real version is detected at runtime from the newest ``vX.Y.Z`` folder that
-ships a binary for the current platform (see ``_detect_client_version``). The
-client now lives in the ``bk_client`` submodule, so we no longer pin a single
-hardcoded version here — a newer bundled client is picked up automatically."""
+Normally the exact ``vX.Y.Z`` is read from ``client/RESOLVED_VERSION`` (baked in
+at build time from the newest patch of the pinned minor series — bk_client
+auto-bumps the patch on each merge). In a plain source checkout that file is
+absent, so we scan for the newest ``vX.Y.Z`` folder that ships a binary for the
+current platform (see ``_detect_client_version``) and only fall back to the
+minor pin (``global_vars.CLIENT_VERSION``) when nothing is on disk yet."""
 
 _client_version_cache: str | None = None
 
@@ -92,6 +94,11 @@ _state_lock = threading.Lock()
 _process: subprocess.Popen | None = None
 _active_port: str = CLIENT_PORTS[0]
 _app_id: int = os.getpid()
+
+# Index into CLIENT_PORTS for the next spawn. Rotated when the client keeps
+# exiting on the current port (e.g. it is occupied by another program) so we
+# abandon a dead port instead of retrying it every startup.
+_port_index: int = 0
 
 # Consecutive /report failures — used by the report poller to trigger an
 # auto-respawn (mirrors Blender's CLIENT_FAILED_REPORTS counter).
@@ -176,19 +183,37 @@ def _parse_version(name: str) -> tuple[int, ...] | None:
 
 
 def _detect_client_version() -> str:
-    """Return the newest bundled client version, e.g. ``v1.11.0``.
+    """Return the exact bundled client version, e.g. ``v1.11.3``.
 
-    Scans ``_client_binaries_root`` for ``vX.Y.Z`` folders that actually
-    contain a binary for the current platform and returns the highest one, so a
-    newer bundled client is used automatically. Falls back to the submodule's
-    ``client/VERSION`` file (fresh checkout, before any build) and finally to
-    ``DEFAULT_CLIENT_VERSION``. The result is cached for the process lifetime.
+    Resolution order (first hit wins, cached for the process lifetime):
+
+    1. ``client/RESOLVED_VERSION`` — baked in at build time from the exact
+       ``vX.Y.Z`` GitHub release that was bundled. bk_client auto-bumps the
+       patch on each merge, so the build pins only the minor series
+       (``global_vars.CLIENT_VERSION``) and records the resolved patch here.
+    2. Newest ``vX.Y.Z`` folder that ships a binary for the current platform —
+       covers a source checkout / dev build where no RESOLVED_VERSION exists.
+    3. The submodule's ``client/VERSION`` file (fresh checkout, before a build).
+    4. ``global_vars.CLIENT_VERSION`` (the minor pin) as a last resort.
     """
     global _client_version_cache
     if _client_version_cache is not None:
         return _client_version_cache
 
     binaries_root = _client_binaries_root()
+
+    # 1. RESOLVED_VERSION baked in at build time (authoritative for packaged
+    #    add-ons). Tolerate a value with or without the leading ``v``.
+    try:
+        with open(os.path.join(binaries_root, "RESOLVED_VERSION"), encoding="utf-8") as fh:
+            resolved = fh.read().strip()
+        if resolved:
+            _client_version_cache = resolved if resolved.startswith("v") else f"v{resolved}"
+            return _client_version_cache
+    except OSError:
+        pass
+
+    # 2. Source checkout / dev build: newest vX.Y.Z folder with a platform binary.
     binary = _binary_name()
     best: tuple[tuple[int, ...], str] | None = None
     try:
@@ -206,23 +231,32 @@ def _detect_client_version() -> str:
     if best is not None:
         _client_version_cache = best[1]
     else:
-        # No binary folder yet — read the VERSION file next to the Go sources.
+        # 3. No binary folder yet — read the VERSION file next to the Go sources.
         try:
             with open(os.path.join(binaries_root, "VERSION"), encoding="utf-8") as fh:
                 _client_version_cache = f"v{fh.read().strip()}"
         except OSError:
+            # 4. Nothing on disk — fall back to the minor pin.
             _client_version_cache = DEFAULT_CLIENT_VERSION
     return _client_version_cache
 
 
 def _client_version() -> str:
-    """Bundled client version string, e.g. ``v1.11.0``."""
+    """Exact bundled client version string, e.g. ``v1.11.3``."""
     return _detect_client_version()
 
 
 def _api_version() -> str:
-    """Client HTTP API version prefix, e.g. ``v1.11`` (major.minor)."""
-    return ".".join(_detect_client_version().split(".")[:2])
+    """Client HTTP API version prefix, e.g. ``v1.11`` (major.minor).
+
+    Derived from the minor pin (``global_vars.CLIENT_VERSION``) rather than the
+    resolved patch: non-breaking client changes bump only the patch and keep the
+    same ``/vX.Y`` API path. Stays tolerant of a full ``vX.Y.Z`` pin too.
+    """
+    parts = global_vars.CLIENT_VERSION.split(".")
+    if len(parts) >= 3:
+        return ".".join(parts[:2])
+    return global_vars.CLIENT_VERSION
 
 
 def _inplace_binary_path() -> str:
@@ -332,33 +366,47 @@ def _maybe_dev_build() -> None:
 
 
 def _ensure_client_binary_installed() -> str:
-    """Copy the in-addon binary to the user's global dir on first run.
+    """Resolve the binary to launch, copying to the user's global dir only when needed.
 
-    Returns the path to use for spawning. Falls back to the in-addon copy
-    (``_use_inplace_client = True``) if the copy fails — e.g. when the
-    addon lives on a read-only volume.
+    Order (mirrors ``ensure_running``: run an existing client, then start, then
+    copy as a last resort):
+
+    1. Prefer an **already-installed** copy at ``dst`` and start it as-is — never
+       overwrite it, so a client another Maya session is currently executing
+       from that path is not clobbered.
+    2. Only when no installed copy exists do we copy the in-addon binary to
+       ``dst`` (first run). Dev rebuilds still refresh because
+       ``_maybe_dev_build`` removes the stale ``dst`` before we get here.
+    3. Fall back to the in-addon copy (``_use_inplace_client = True``) if the
+       copy fails — e.g. when the addon lives on a read-only volume.
     """
     global _use_inplace_client
 
     _maybe_dev_build()
 
     src = _inplace_binary_path()
+    dst = _installed_binary_path()
+
+    # 1. An installed copy already exists — start it without touching it.
+    if not _use_inplace_client and os.path.isfile(dst):
+        return dst
+
     if not os.path.isfile(src):
         raise FileNotFoundError(f"Blendkit client binary not found at {src}. Run bk_maya/dev.py to build it.")
 
     if _use_inplace_client:
         return src
 
-    dst = _installed_binary_path()
+    # 2. No installed copy yet — install it (first run), then run from there.
     try:
-        if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(src):
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-            if sys.platform != "win32":
-                os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
-            log.info("Installed Blendkit client to %s", dst)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        if sys.platform != "win32":
+            os.chmod(dst, 0o755)  # noqa: S103  # nosec B103 - exec bit required on the client binary
+        log.info("Installed Blendkit client to %s", dst)
         return dst
     except OSError as exc:
+        # 3. Read-only global dir (Microsoft Store / sandboxed Maya): run in place.
         log.warning(
             "Could not install client to %s (%s); using in-addon copy.",
             dst,
@@ -446,6 +494,19 @@ def _find_running_client() -> str | None:
     return None
 
 
+def _client_process_alive() -> bool:
+    """True if a client subprocess *we* spawned is still running.
+
+    Guards against spawning a duplicate on a transient poll timeout: a live but
+    momentarily busy client would otherwise get a second process that fails to
+    bind the same port (EADDRINUSE) and dies, spinning a respawn loop that both
+    pins the CPU and stalls startup. Mirrors the Blender addon's
+    ``is_client_process_alive``.
+    """
+    proc = _process
+    return proc is not None and proc.poll() is None
+
+
 def _spawn(port: str) -> subprocess.Popen:
     binary = _ensure_client_binary_installed()
 
@@ -493,12 +554,16 @@ def _spawn(port: str) -> subprocess.Popen:
 def ensure_running(timeout: float = 8.0) -> str:
     """Make sure a client process is reachable; return its port.
 
-    Thread-safe.  No-op if a process is already responsive.
+    Thread-safe. Reuses any client already answering, never spawns a duplicate
+    while our own process is still alive, and rotates to the next port when the
+    client keeps dying on the current one (e.g. the port is taken by another
+    program) instead of hammering the same dead port every call.
     """
-    global _process, _active_port, _have_client, _unavailable_reason
+    global _process, _active_port, _have_client, _unavailable_reason, _port_index
 
     with _state_lock:
-        # Already-running existing process (perhaps from a previous Maya session)?
+        # 1. Reuse a client already answering on any known port (one from a
+        #    previous Maya session, or our own once it has finished booting).
         existing = _find_running_client()
         if existing:
             _active_port = existing
@@ -507,8 +572,18 @@ def ensure_running(timeout: float = 8.0) -> str:
             log.debug("Reusing client on port %s", existing)
             return existing
 
-        # Spawn a new one on the preferred port and wait for it.
-        port = CLIENT_PORTS[0]
+        # 2. A client WE spawned is still alive but just slow to answer the ping
+        #    (booting). Do NOT spawn a duplicate: it would fail to bind the same
+        #    port and die, spinning a respawn loop. Reuse its port — the poller
+        #    keeps pinging and it will answer shortly.
+        if _client_process_alive():
+            _have_client = True
+            _unavailable_reason = None
+            log.debug("Client process still alive on port %s; not respawning", _active_port)
+            return _active_port
+
+        # 3. Spawn on the current port in the rotation.
+        port = CLIENT_PORTS[_port_index % len(CLIENT_PORTS)]
         try:
             _process = _spawn(port)
         except FileNotFoundError as exc:
@@ -527,6 +602,20 @@ def ensure_running(timeout: float = 8.0) -> str:
             _have_client = True
             _unavailable_reason = None
             return port
+        # The client exited before it answered — almost always the port is
+        # occupied/blocked. Stop waiting on a dead port (that would burn the
+        # whole timeout on every call) and rotate so the next attempt tries a
+        # different port instead of retrying the same one.
+        if _process is not None and _process.poll() is not None:
+            with _state_lock:
+                _port_index += 1
+            next_port = CLIENT_PORTS[_port_index % len(CLIENT_PORTS)]
+            log.warning(
+                "Client exited on port %s (likely occupied); next attempt will use port %s",
+                port,
+                next_port,
+            )
+            break
         time.sleep(0.15)
 
     raise RuntimeError(f"Blendkit client did not respond on port {port} within {timeout}s (see log at {_log_path()})")
