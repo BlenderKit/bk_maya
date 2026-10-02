@@ -29,7 +29,7 @@ SERVER: str = os.environ.get("BLENDKIT_SERVER", "https://www.blendkit.com")
 
 # ── Client ────────────────────────────────────────────────────────────────────
 
-CLIENT_VERSION: str = "v1.12"
+CLIENT_VERSION: str = "v1.13"
 """Minor-series pin (``vX.Y``) of the Blendkit Go client this add-on targets.
 
 bk_client auto-bumps the PATCH version on every merge, so we pin only the minor
