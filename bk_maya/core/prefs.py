@@ -87,6 +87,9 @@ class _Prefs:
     ``stage``     — load the USD as a native Maya USD stage (mayaUsdProxyShape, default)."""
 
     # ── Search filters ─────────────────────────────────────────────────────
+    search_order: str = ""
+    """Search result ordering. Empty preserves the default relevance/recency order."""
+
     search_texture_resolution: bool = False
     """Limit search results by texture resolution."""
 

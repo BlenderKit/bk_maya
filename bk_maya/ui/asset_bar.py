@@ -913,6 +913,7 @@ class AssetGrid(QWidget):
 
         self._query: str = ""
         self._asset_type: str = "model"
+        self._order: str = ""
         self._results: list[dict[str, Any]] = []
         self._seen_ids: set[str] = set()
         self._total: int = 0
@@ -1032,6 +1033,7 @@ class AssetGrid(QWidget):
         bk_search.search(
             query=self._query,
             asset_type=self._asset_type,
+            order=self._order,
             free_only=self._free_only,
             my_assets_only=self._my_assets_only,
             bookmarked_only=self._bookmarked_only,
@@ -1096,9 +1098,11 @@ class AssetGrid(QWidget):
         design_year_min: int = 0,
         design_year_max: int = 0,
         geometry_nodes: bool = False,
+        order: str = "",
     ) -> None:
         self._query = query
         self._asset_type = asset_type
+        self._order = order
         self._free_only = free_only
         self._my_assets_only = my_assets_only
         self._bookmarked_only = bookmarked_only
@@ -1152,6 +1156,7 @@ class AssetGrid(QWidget):
         bk_search.search(
             query=query,
             asset_type=asset_type,
+            order=order,
             free_only=free_only,
             my_assets_only=my_assets_only,
             bookmarked_only=bookmarked_only,
@@ -2053,6 +2058,36 @@ class AssetBarWidget(QWidget):
         self._filters.filters_changed.connect(self._on_filters_changed)
         layout.addWidget(self._filters)
 
+        order_row = QHBoxLayout()
+        order_row.setContentsMargins(8, 4, 8, 4)
+        order_label = QLabel("Order")
+        order_row.addWidget(order_label)
+        self._order = QComboBox()
+        for value, label in (
+            ("", "Default"),
+            ("-created", "Newest"),
+            ("created", "Oldest"),
+            ("-bookmarks", "Bookmarks: High to Low"),
+            ("bookmarks", "Bookmarks: Low to High"),
+            ("-score", "Score: High to Low"),
+            ("score", "Score: Low to High"),
+            ("-working_hours", "Complexity: High to Low"),
+            ("working_hours", "Complexity: Low to High"),
+            ("-quality", "Quality: High to Low"),
+            ("quality", "Quality: Low to High"),
+        ):
+            self._order.addItem(label, value)
+        self._order.setToolTip("Search result order. Default uses relevance for keywords and recent uploads otherwise.")
+        order_label.setBuddy(self._order)
+        saved_order = self._order.findData(prefs.search_order)
+        if saved_order < 0:
+            log.warning("Unknown saved search order %r; using Default.", prefs.search_order)
+            saved_order = 0
+        self._order.setCurrentIndex(saved_order)
+        self._order.currentIndexChanged.connect(self._on_order_changed)
+        order_row.addWidget(self._order, stretch=1)
+        layout.addLayout(order_row)
+
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet("color: #333;")
@@ -2194,7 +2229,13 @@ class AssetBarWidget(QWidget):
             design_year_min=self._filters.design_year_min,
             design_year_max=self._filters.design_year_max,
             geometry_nodes=self._filters.geometry_nodes,
+            order=self._order.currentData(),
         )
+
+    def _on_order_changed(self) -> None:
+        prefs.search_order = self._order.currentData()
+        prefs.save()
+        self._on_filters_changed()
 
     def _on_filters_changed(self) -> None:
         self._grid.start_search(
@@ -2217,6 +2258,7 @@ class AssetBarWidget(QWidget):
             design_year_min=self._filters.design_year_min,
             design_year_max=self._filters.design_year_max,
             geometry_nodes=self._filters.geometry_nodes,
+            order=self._order.currentData(),
         )
 
     def _default_search(self) -> None:
@@ -2240,6 +2282,7 @@ class AssetBarWidget(QWidget):
             design_year_min=self._filters.design_year_min,
             design_year_max=self._filters.design_year_max,
             geometry_nodes=self._filters.geometry_nodes,
+            order=self._order.currentData(),
         )
 
     def search_by_author(self, author_id: int, author_name: str = "") -> None:
@@ -2269,6 +2312,7 @@ class AssetBarWidget(QWidget):
             design_year_min=self._filters.design_year_min,
             design_year_max=self._filters.design_year_max,
             geometry_nodes=self._filters.geometry_nodes,
+            order=self._order.currentData(),
         )
         log.info("Search-by-author: id=%s name=%r", author_id, author_name)
 
