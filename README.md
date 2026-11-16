@@ -45,16 +45,14 @@ It is a port of the official Blender add-on built on:
 git clone --recursive https://github.com/BlenderKit/bk_maya.git
 cd bk_maya
 
-# 2. create a venv and install dev tooling
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"  # or: pdm install / uv sync --group dev
+# 2. create a venv and install dev tooling (requires PDM)
+pdm install -G dev
 
-# 3. enable pre-commit hooks (ruff + pydoclint)
-pre-commit install
+# 3. enable commit and push hooks (Ruff + pydoclint + Bandit)
+pdm run setup-hooks
 
 # 4. run the synthetic test suite
-python -m unittest discover tests
+pdm run python -m unittest discover tests
 ```
 
 To build a distributable bundle:
@@ -114,7 +112,10 @@ and load `maya_plugin.py` from `Windows ▸ Settings/Preferences ▸ Plug-in Man
 | Unit tests   | `python -m unittest discover tests`     | `.github/workflows/PR.yml` → **Maya-Port-Unit-Tests** |
 | Go client    | `go test ./client/...`                  | `.github/workflows/PR.yml` → **Client-Unit-Tests** |
 
-All checks are also wired up as a [pre-commit](https://pre-commit.com) hook — see [.pre-commit-config.yaml](.pre-commit-config.yaml).
+The lint, format, docstring and security checks also run before commits and
+pushes via [pre-commit](https://pre-commit.com) — see
+[.pre-commit-config.yaml](.pre-commit-config.yaml). Both PDM setup scripts install
+the hooks automatically. Run `pdm run check` to check all files manually.
 
 ## How to contribute
 - Share the word about Blendkit with your friends and colleagues, or on social media.

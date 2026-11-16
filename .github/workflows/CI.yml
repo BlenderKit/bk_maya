@@ -70,7 +70,8 @@ jobs:
                   tests.test_proxor_maya_draw \
                   tests.test_locator_state \
                   tests.test_prx_format_roundtrip \
-                  tests.test_global_vars
+                  tests.test_global_vars \
+                  tests.test_maya_plugin_bootstrap
           python -m coverage xml -o coverage-maya-port.xml
       - name: Upload Maya-port coverage to Codecov
         uses: codecov/codecov-action@v4

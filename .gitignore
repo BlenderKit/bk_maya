@@ -32,3 +32,7 @@ _bck/
 
 # man
 instructions.txt
+
+
+# built binaries
+/client
