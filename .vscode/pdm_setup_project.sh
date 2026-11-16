@@ -161,14 +161,12 @@ fi
 # --- Install dependencies ---
 if [ -f "${REQUIREMENTS_FILE}" ]; then
   echo "Installing dependencies from pyproject.toml via PDM..."
-  # Default: install main deps as defined in [project] and [dependency-groups] (default group only).
-  # If you also want dev tools installed, uncomment the -G dev line below.
-  if ! pdm install; then
+  if ! pdm install -G dev; then
     echo "Warning: 'pdm install' failed. Please review pyproject.toml and lock state." >&2
     exit 1
   fi
-  # To include dev group as well, use:
-  # pdm install -G dev
+  echo "Installing pre-commit and pre-push hooks..."
+  pdm run setup-hooks
 else
   echo "No pyproject.toml found in ${PROJECT_NAME}, skipping dependency installation."
 fi
@@ -183,4 +181,4 @@ echo "----------------------------------------"
 echo "How to use the environment:"
 echo "  pdm shell                     # activate the venv"
 echo "  pdm run python -V             # run python from the venv"
-echo "  pdm run black .               # run tools from the venv"
+echo "  pdm run check                 # run all quality checks"

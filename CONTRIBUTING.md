@@ -75,22 +75,24 @@ tested in its own repository (the `bk_client` submodule), not here. The exact
 tool versions used by CI are pinned in `pyproject.toml` under
 `[dependency-groups].dev`.
 
-Install the dev tools into your active environment:
+With PDM installed, install the dev tools and Git hooks:
 ```
-pip install -e .
-pip install "ruff>=0.15.6" "pydoclint>=0.8.3" "bandit>=1.9.4" pre-commit
-pre-commit install
-```
-
-Before committing, run the same checks CI runs:
-```
-ruff check .
-ruff format .
-pydoclint .
-bandit -c _bandit.yaml -ll -r .
+pdm install -G dev
+pdm run setup-hooks
 ```
 
-Pull requests will fail in CI if any of these report errors.
+Both `.vscode/pdm_setup_project.sh` and `.vscode/pdm_setup_project.bat` do
+this automatically. Hooks run Ruff lint/format, pydoclint and Bandit before
+commits and pushes. Ruff can modify files; review and stage those changes,
+then retry the commit or push. Vendored code and submodules are excluded.
+
+Run all hooks against the whole repository:
+```
+pdm run check
+```
+
+Git hooks are local to each clone and can be bypassed; CI still runs the
+checks independently and fails pull requests on errors.
 
 ### Building the add-on
 
@@ -164,7 +166,8 @@ python -m coverage run --source=bk_maya/bk_proxor/src/bk_proxor,bk_maya/core \
         tests.test_proxor_maya_draw \
         tests.test_locator_state \
         tests.test_prx_format_roundtrip \
-        tests.test_global_vars
+        tests.test_global_vars \
+        tests.test_maya_plugin_bootstrap
 ```
 
 Go tests for the client live in the `bk_client` submodule and run in that

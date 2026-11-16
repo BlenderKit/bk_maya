@@ -122,12 +122,18 @@ echo "Detected Python version: !PYTHON_VERSION!"
 if exist "!REQUIREMENTS_FILE!" (
     echo "Syncing environment with dependencies..."
 
-    :: First, try to update the lockfile to include dev dependencies
-    echo "Updating lockfile to include dev dependencies..."
-    pdm install
+    pdm install -G dev
 
     if errorlevel 1 (
-        echo "Warning: Failed to update lockfile with all groups. Using fallback approach..."
+        echo "Dependency installation failed. Please review pyproject.toml and lock state."
+        exit /b 1
+    )
+
+    echo "Installing pre-commit and pre-push hooks..."
+    pdm run setup-hooks
+    if errorlevel 1 (
+        echo "Git hook installation failed."
+        exit /b 1
     )
 ) else (
     echo "No pyproject.toml found in !PROJECT_NAME!, skipping dependency sync."

@@ -9,9 +9,7 @@ from unittest.mock import patch
 
 class MayaPluginBootstrapTest(unittest.TestCase):
     def test_plugin_loads_without_file_global(self):
-        plugin_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "bk_maya", "maya_plugin.py")
-        )
+        plugin_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bk_maya", "maya_plugin.py"))
         with open(plugin_path, encoding="utf-8") as source_file:
             source = source_file.read()
 
@@ -30,7 +28,8 @@ class MayaPluginBootstrapTest(unittest.TestCase):
         ):
             try:
                 namespace = {"__name__": "maya_plugin_without_file"}
-                exec(compile(source, plugin_path, "exec"), namespace)
+                # Execute trusted repository source to reproduce Maya's loader without __file__.
+                exec(compile(source, plugin_path, "exec"), namespace)  # noqa: S102
                 self.assertEqual(namespace["_BK_DIR"], os.path.dirname(plugin_path))
 
                 namespace["_ensure_paths"]()

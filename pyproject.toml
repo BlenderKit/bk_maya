@@ -20,6 +20,10 @@ dev = [
     "pre-commit>=4.6.0",
 ]
 
+[tool.pdm.scripts]
+setup-hooks = "pre-commit install --install-hooks"
+check = "pre-commit run --all-files"
+
 [tool.ruff]
 # Shipped add-on must run on Maya 2023's Python 3.9 (dev venv is 3.11+, see
 # requires-python). py39 keeps 3.10+ syntax out and makes the FA rules enforce
