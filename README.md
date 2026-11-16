@@ -32,6 +32,14 @@ It is a port of the official Blender add-on built on:
 - The shared Go `blenderkit-client` for downloads, auth and search
 - A vendored `qtpy` / `requests` / `packaging` (see [bk_maya/lib](bk_maya/lib))
 
+### Result ordering
+
+Use the **Order** dropdown directly below **Filters** to sort by newest/oldest,
+bookmarks, score, complexity, or quality (high-to-low or low-to-high).
+**Default** keeps relevance ordering for keyword searches and recent uploads
+otherwise. The selection is saved and applies to subsequent searches and
+infinite scrolling.
+
 ## Repository layout
 - [bk_maya/](bk_maya) — the Maya plugin (core, UI, plugins, vendored libs)
 - [bk_maya/bk_proxor/](bk_maya/bk_proxor) — proxor mesh-preview submodule (`.prx` / `.prxc`)
