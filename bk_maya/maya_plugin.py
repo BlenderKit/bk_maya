@@ -15,9 +15,17 @@ import sys
 
 import maya.api.OpenMaya as om2
 
+# Maya may execute this plug-in without defining __file__.
+try:
+    _THIS_FILE = __file__
+except NameError:
+    import inspect
+
+    _THIS_FILE = inspect.getfile(inspect.currentframe())
+
 # Make the addon root (parent of bk_maya/) importable so the centralised
 # version module can be read at import time.
-_BK_DIR = os.path.dirname(os.path.abspath(__file__))  # .../bk_maya
+_BK_DIR = os.path.dirname(os.path.abspath(_THIS_FILE))  # .../bk_maya
 _ADDON_ROOT = os.path.dirname(_BK_DIR)  # addon root
 if _ADDON_ROOT not in sys.path:
     sys.path.insert(0, _ADDON_ROOT)
@@ -43,8 +51,7 @@ def _ensure_paths() -> None:
     fallback for cases where the module was loaded after startup or the
     PYTHONPATH entries were not yet applied.
     """
-    # __file__ is <repo>/bk_maya/maya_plugin.py
-    bk_maya_dir = os.path.dirname(os.path.abspath(__file__))
+    bk_maya_dir = _BK_DIR
     lib_dir = os.path.join(bk_maya_dir, "lib")
     for extra in (bk_maya_dir, lib_dir):
         if os.path.isdir(extra) and extra not in sys.path:
